@@ -112,6 +112,10 @@
       {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
+      },
+      {
+        "command": "projectcycle.goBack",
+        "title": "ProjectCycle: Go to Previous Window"
       }
     ],
     "menus": {
@@ -190,30 +194,13 @@
         "command": "projectcycle.cycleAll",
         "key": "ctrl+.",
         "mac": "ctrl+."
+      },
+      {
+        "command": "projectcycle.goBack",
+        "key": "ctrl+;",
+        "mac": "ctrl+;"
       }
-    ],
-    "configuration": {
-      "title": "ProjectCycle",
-      "properties": {
-        "projectcycle.priorityProjects": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Ordered list of absolute paths for Ctrl+. cycle"
-        },
-        "projectcycle.allProjects": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Ordered list of absolute paths for Ctrl+Shift+. cycle"
-        },
-        "projectcycle.projectColors": {
-          "type": "object",
-          "default": {},
-          "description": "Map of absolute project path to hex color string (e.g. { \"/path/to/project\": \"#bd93f9\" })"
-        }
-      }
-    }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

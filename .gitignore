@@ -3,3 +3,5 @@ out/
 *.vsix
 .claude/
 .notes/
+CLAUDE.local.md
+.vscode/settings.json

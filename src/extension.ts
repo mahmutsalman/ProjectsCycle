@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import { execSync } from 'child_process';
 
 let openWindowNames: Set<string> = new Set();
+let navHistory: string[] = [];
+let store: ProjectStore;
 
 // ---------------------------------------------------------------------------
 // Color Palette
@@ -94,6 +96,87 @@ class TimeTracker {
 }
 
 // ---------------------------------------------------------------------------
+// Project Store  (replaces VS Code settings for project lists & colors)
+// ---------------------------------------------------------------------------
+
+interface ProjectsData {
+    priorityProjects: string[];
+    allProjects: string[];
+    projectColors: Record<string, string>;
+}
+
+class ProjectStore {
+    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {} };
+    private readonly filePath: string;
+
+    constructor(storagePath: string) {
+        this.filePath = path.join(storagePath, 'projects-data.json');
+        this.load();
+        this.migrateFromConfig();
+    }
+
+    private load(): void {
+        try {
+            if (fs.existsSync(this.filePath)) {
+                const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, ...parsed };
+            }
+        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {} }; }
+    }
+
+    save(): void {
+        try {
+            fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+            fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf8');
+        } catch {}
+    }
+
+    /** One-time migration: pull data out of VS Code global settings into our file. */
+    private migrateFromConfig(): void {
+        const cfg = vscode.workspace.getConfiguration('projectcycle');
+        const priority: string[] = cfg.get<string[]>('priorityProjects') ?? [];
+        const all: string[]      = cfg.get<string[]>('allProjects') ?? [];
+        const colors: Record<string, string> = cfg.get<Record<string, string>>('projectColors') ?? {};
+
+        if (priority.length === 0 && all.length === 0 && Object.keys(colors).length === 0) { return; }
+
+        for (const p of priority) {
+            if (!this.data.priorityProjects.includes(p)) { this.data.priorityProjects.push(p); }
+        }
+        for (const p of all) {
+            if (!this.data.allProjects.includes(p)) { this.data.allProjects.push(p); }
+        }
+        for (const [k, v] of Object.entries(colors)) {
+            if (!this.data.projectColors[k]) { this.data.projectColors[k] = v; }
+        }
+        this.save();
+
+        // Clear stale entries from VS Code settings
+        cfg.update('priorityProjects', undefined, vscode.ConfigurationTarget.Global);
+        cfg.update('allProjects',      undefined, vscode.ConfigurationTarget.Global);
+        cfg.update('projectColors',    undefined, vscode.ConfigurationTarget.Global);
+    }
+
+    getProjects(key: 'priorityProjects' | 'allProjects'): string[] {
+        return [...this.data[key]];
+    }
+
+    setProjects(key: 'priorityProjects' | 'allProjects', list: string[]): void {
+        this.data[key] = list;
+        this.save();
+    }
+
+    getColors(): Record<string, string> {
+        return { ...this.data.projectColors };
+    }
+
+    setColors(colors: Record<string, string>): void {
+        this.data.projectColors = colors;
+        this.save();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar Tree Views
 // ---------------------------------------------------------------------------
 
@@ -127,10 +210,11 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
     constructor(
-        private readonly configKey: string,
+        private readonly configKey: 'priorityProjects' | 'allProjects',
         private readonly contextVal: string,
         private readonly storagePath: string,
         private readonly tracker: TimeTracker,
+        private readonly store: ProjectStore,
     ) {}
 
     refresh(): void { this._onDidChangeTreeData.fire(); }
@@ -138,9 +222,8 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
     getTreeItem(element: ProjectItem): vscode.TreeItem { return element; }
 
     getChildren(): ProjectItem[] {
-        const cfg = vscode.workspace.getConfiguration('projectcycle');
-        const paths: string[] = cfg.get<string[]>(this.configKey) ?? [];
-        const colors: Record<string, string> = cfg.get<Record<string, string>>('projectColors') ?? {};
+        const paths = this.store.getProjects(this.configKey);
+        const colors = this.store.getColors();
         return paths.map((p, i) => {
             const timeStr = this.tracker.format(this.tracker.getSeconds(p));
             return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
@@ -154,11 +237,12 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
 
 export function activate(context: vscode.ExtensionContext): void {
     const storagePath = context.globalStorageUri.fsPath;
+    store = new ProjectStore(storagePath);
     const tracker = new TimeTracker(storagePath);
     const currentProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker);
-    const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker);
+    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
+    const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker, store);
 
     openWindowNames = queryOpenWindowNames();
 
@@ -171,28 +255,16 @@ export function activate(context: vscode.ExtensionContext): void {
         showCollapseAll: false,
     });
 
-    vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('projectcycle.priorityProjects')) { priorityProvider.refresh(); }
-        if (e.affectsConfiguration('projectcycle.allProjects')) { allProvider.refresh(); }
-        if (e.affectsConfiguration('projectcycle.projectColors')) {
-            priorityProvider.refresh();
-            allProvider.refresh();
-        }
-    }, null, context.subscriptions);
-
     // Auto-register this window's workspace into allProjects on startup
     if (currentProject) {
-        const config = vscode.workspace.getConfiguration('projectcycle');
-        const allList: string[] = [...(config.get<string[]>('allProjects') ?? [])];
+        const allList = store.getProjects('allProjects');
         if (!allList.includes(currentProject)) {
             allList.push(currentProject);
-            config.update('allProjects', allList, vscode.ConfigurationTarget.Global).then(() => {
-                allProvider.refresh();
-            });
+            store.setProjects('allProjects', allList);
+            allProvider.refresh();
         }
         // Apply this project's color to workbench on startup
-        const projectColors = config.get<Record<string, string>>('projectColors') ?? {};
-        const startupColor = projectColors[currentProject];
+        const startupColor = store.getColors()[currentProject];
         if (startupColor) {
             applyProjectColor(startupColor);
         } else {
@@ -209,20 +281,20 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('projectcycle.cycleAll', cycleAll),
 
         // Priority section
-        vscode.commands.registerCommand('projectcycle.addCurrent', async () => {
-            await addCurrentTo('priorityProjects', 'priority');
+        vscode.commands.registerCommand('projectcycle.addCurrent', () => {
+            addCurrentTo('priorityProjects', 'priority');
             priorityProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshPriorityView', () => {
             openWindowNames = queryOpenWindowNames();
             priorityProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.moveUp', async (item: ProjectItem) => {
-            await moveInList('priorityProjects', item.projectPath, -1);
+        vscode.commands.registerCommand('projectcycle.moveUp', (item: ProjectItem) => {
+            moveInList('priorityProjects', item.projectPath, -1);
             priorityProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.moveDown', async (item: ProjectItem) => {
-            await moveInList('priorityProjects', item.projectPath, 1);
+        vscode.commands.registerCommand('projectcycle.moveDown', (item: ProjectItem) => {
+            moveInList('priorityProjects', item.projectPath, 1);
             priorityProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.deleteProject', async (item: ProjectItem) => {
@@ -231,20 +303,20 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
 
         // All Projects section
-        vscode.commands.registerCommand('projectcycle.addCurrentToAll', async () => {
-            await addCurrentTo('allProjects', 'all projects');
+        vscode.commands.registerCommand('projectcycle.addCurrentToAll', () => {
+            addCurrentTo('allProjects', 'all projects');
             allProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshAllView', () => {
             openWindowNames = queryOpenWindowNames();
             allProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.moveUpAll', async (item: ProjectItem) => {
-            await moveInList('allProjects', item.projectPath, -1);
+        vscode.commands.registerCommand('projectcycle.moveUpAll', (item: ProjectItem) => {
+            moveInList('allProjects', item.projectPath, -1);
             allProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.moveDownAll', async (item: ProjectItem) => {
-            await moveInList('allProjects', item.projectPath, 1);
+        vscode.commands.registerCommand('projectcycle.moveDownAll', (item: ProjectItem) => {
+            moveInList('allProjects', item.projectPath, 1);
             allProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.deleteProjectAll', async (item: ProjectItem) => {
@@ -252,27 +324,37 @@ export function activate(context: vscode.ExtensionContext): void {
             allProvider.refresh();
         }),
 
-        vscode.commands.registerCommand('projectcycle.removeCurrent', async () => {
+        vscode.commands.registerCommand('projectcycle.removeCurrent', () => {
             const folders = vscode.workspace.workspaceFolders;
             if (!folders || folders.length === 0) { return; }
             const currentPath = folders[0].uri.fsPath;
-            const config = vscode.workspace.getConfiguration('projectcycle');
-            const list: string[] = config.get<string[]>('priorityProjects') ?? [];
-            await config.update('priorityProjects', list.filter(p => p !== currentPath), vscode.ConfigurationTarget.Global);
+            store.setProjects('priorityProjects', store.getProjects('priorityProjects').filter(p => p !== currentPath));
             priorityProvider.refresh();
         }),
 
         vscode.commands.registerCommand('projectcycle.activateProject', async (projectPath: string, isOpen: boolean) => {
+            const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (isOpen) {
-                focusWindow(path.basename(projectPath));
+                if (focusWindow(path.basename(projectPath))) {
+                    pushNavHistory(currentFolder ?? '');
+                }
             } else {
+                pushNavHistory(currentFolder ?? '');
                 await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath), { forceNewWindow: true });
             }
         }),
 
+        vscode.commands.registerCommand('projectcycle.goBack', () => {
+            if (navHistory.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No previous window in history.');
+                return;
+            }
+            const prev = navHistory.pop()!;
+            focusWindow(path.basename(prev));
+        }),
+
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
-            const cfg = vscode.workspace.getConfiguration('projectcycle');
-            const colors: Record<string, string> = { ...(cfg.get<Record<string, string>>('projectColors') ?? {}) };
+            const colors: Record<string, string> = store.getColors();
             const currentColor = colors[item.projectPath];
             const isActiveProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath === item.projectPath;
 
@@ -344,8 +426,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
             if (result.action === 'remove') {
                 delete colors[item.projectPath];
-                await cfg.update('projectColors', colors, vscode.ConfigurationTarget.Global);
+                store.setColors(colors);
                 if (isActiveProject) { await removeProjectColor(); }
+                priorityProvider.refresh();
+                allProvider.refresh();
                 return;
             }
 
@@ -376,7 +460,9 @@ export function activate(context: vscode.ExtensionContext): void {
             if (!finalHex) { return; }
 
             colors[item.projectPath] = finalHex;
-            await cfg.update('projectColors', colors, vscode.ConfigurationTarget.Global);
+            store.setColors(colors);
+            priorityProvider.refresh();
+            allProvider.refresh();
             if (isActiveProject) { await applyProjectColor(finalHex); }
         }),
     );
@@ -611,8 +697,8 @@ function focusWindow(folderName: string): boolean {
     }
 }
 
-function cycleList(configKey: string, emptyMsg: string, noneOpenMsg: string): void {
-    const paths: string[] = vscode.workspace.getConfiguration('projectcycle').get(configKey) ?? [];
+function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: string, noneOpenMsg: string): void {
+    const paths = store.getProjects(configKey);
     if (paths.length === 0) {
         vscode.window.showInformationMessage(emptyMsg);
         return;
@@ -622,9 +708,20 @@ function cycleList(configKey: string, emptyMsg: string, noneOpenMsg: string): vo
     const start = (currentIdx + 1) % paths.length;
     for (let i = 0; i < paths.length; i++) {
         const idx = (start + i) % paths.length;
-        if (focusWindow(path.basename(paths[idx]))) { return; }
+        if (focusWindow(path.basename(paths[idx]))) {
+            pushNavHistory(currentFolder);
+            return;
+        }
     }
     vscode.window.showInformationMessage(noneOpenMsg);
+}
+
+function pushNavHistory(projectPath: string): void {
+    if (!projectPath) { return; }
+    // Don't push consecutive duplicates
+    if (navHistory[navHistory.length - 1] === projectPath) { return; }
+    navHistory.push(projectPath);
+    if (navHistory.length > 50) { navHistory.shift(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +748,7 @@ function cycleAll(): void {
 // Project management helpers
 // ---------------------------------------------------------------------------
 
-async function addCurrentTo(configKey: string, label: string): Promise<void> {
+function addCurrentTo(configKey: 'priorityProjects' | 'allProjects', label: string): void {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
         vscode.window.showWarningMessage('ProjectCycle: No workspace folder open.');
@@ -659,26 +756,24 @@ async function addCurrentTo(configKey: string, label: string): Promise<void> {
     }
     const currentPath = folders[0].uri.fsPath;
     const folderName = path.basename(currentPath);
-    const config = vscode.workspace.getConfiguration('projectcycle');
-    const list: string[] = [...(config.get<string[]>(configKey) ?? [])];
+    const list = store.getProjects(configKey);
     if (list.includes(currentPath)) {
         vscode.window.showInformationMessage(`ProjectCycle: Already in ${label} — ${folderName}`);
         return;
     }
     list.push(currentPath);
-    await config.update(configKey, list, vscode.ConfigurationTarget.Global);
+    store.setProjects(configKey, list);
     vscode.window.showInformationMessage(`ProjectCycle: Added to ${label}: ${folderName}`);
 }
 
-async function moveInList(configKey: string, projectPath: string, direction: -1 | 1): Promise<void> {
-    const config = vscode.workspace.getConfiguration('projectcycle');
-    const list: string[] = [...(config.get<string[]>(configKey) ?? [])];
+function moveInList(configKey: 'priorityProjects' | 'allProjects', projectPath: string, direction: -1 | 1): void {
+    const list = store.getProjects(configKey);
     const idx = list.indexOf(projectPath);
     if (idx === -1) { return; }
     const newIdx = idx + direction;
     if (newIdx < 0 || newIdx >= list.length) { return; }
     [list[idx], list[newIdx]] = [list[newIdx], list[idx]];
-    await config.update(configKey, list, vscode.ConfigurationTarget.Global);
+    store.setProjects(configKey, list);
 }
 
 // ---------------------------------------------------------------------------
@@ -775,7 +870,7 @@ async function removeProjectColor(): Promise<void> {
         vscode.ConfigurationTarget.Workspace);
 }
 
-async function deleteFromList(configKey: string, projectPath: string, label: string): Promise<void> {
+async function deleteFromList(configKey: 'priorityProjects' | 'allProjects', projectPath: string, label: string): Promise<void> {
     const folderName = path.basename(projectPath);
     const confirm = await vscode.window.showWarningMessage(
         `Remove "${folderName}" from ${label}?`,
@@ -783,8 +878,6 @@ async function deleteFromList(configKey: string, projectPath: string, label: str
         'Remove'
     );
     if (confirm !== 'Remove') { return; }
-    const config = vscode.workspace.getConfiguration('projectcycle');
-    const list: string[] = config.get<string[]>(configKey) ?? [];
-    await config.update(configKey, list.filter(p => p !== projectPath), vscode.ConfigurationTarget.Global);
+    store.setProjects(configKey, store.getProjects(configKey).filter(p => p !== projectPath));
     vscode.window.showInformationMessage(`ProjectCycle: Removed: ${folderName}`);
 }
