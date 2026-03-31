@@ -33,11 +33,11 @@
       "projectcycle-sidebar": [
         {
           "id": "projectcycle.priorityView",
-          "name": "Priority Cycle (Ctrl+.)"
+          "name": "Priority Cycle (Ctrl+,)"
         },
         {
           "id": "projectcycle.allView",
-          "name": "All Projects (Ctrl+Shift+.)"
+          "name": "All Projects (Ctrl+Shift+,)"
         }
       ]
     },
@@ -104,6 +104,10 @@
         "command": "projectcycle.assignColor",
         "title": "Assign Color",
         "icon": "$(symbol-color)"
+      },
+      {
+        "command": "projectcycle.activateProject",
+        "title": "Open / Focus Project"
       }
     ],
     "menus": {
@@ -172,7 +176,18 @@
         }
       ]
     },
-    "keybindings": [],
+    "keybindings": [
+      {
+        "command": "projectcycle.cyclePriority",
+        "key": "ctrl+,",
+        "mac": "ctrl+,"
+      },
+      {
+        "command": "projectcycle.cycleAll",
+        "key": "ctrl+shift+,",
+        "mac": "ctrl+shift+,"
+      }
+    ],
     "configuration": {
       "title": "ProjectCycle",
       "properties": {

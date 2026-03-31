@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 
+let openWindowNames: Set<string> = new Set();
+
 // ---------------------------------------------------------------------------
 // Color Palette
 // ---------------------------------------------------------------------------
@@ -10,28 +12,33 @@ import { execSync } from 'child_process';
 interface ThemeColor { name: string; hex: string; source: string; }
 
 const COLOR_PALETTE: ThemeColor[] = [
-    { name: 'Dracula Purple',     hex: '#bd93f9', source: 'Dracula' },
-    { name: 'Dracula Pink',       hex: '#ff79c6', source: 'Dracula' },
-    { name: 'Dracula Cyan',       hex: '#8be9fd', source: 'Dracula' },
-    { name: 'Dracula Green',      hex: '#50fa7b', source: 'Dracula' },
-    { name: 'Catppuccin Mauve',   hex: '#cba6f7', source: 'Catppuccin' },
-    { name: 'Catppuccin Peach',   hex: '#fab387', source: 'Catppuccin' },
-    { name: 'Catppuccin Sky',     hex: '#89dceb', source: 'Catppuccin' },
-    { name: 'Catppuccin Green',   hex: '#a6e3a1', source: 'Catppuccin' },
-    { name: 'Tokyo Blue',         hex: '#7aa2f7', source: 'Tokyo Night' },
-    { name: 'Tokyo Purple',       hex: '#9d7cd8', source: 'Tokyo Night' },
-    { name: 'Tokyo Cyan',         hex: '#7dcfff', source: 'Tokyo Night' },
-    { name: 'Tokyo Green',        hex: '#9ece6a', source: 'Tokyo Night' },
-    { name: 'Nord Frost Blue',    hex: '#88c0d0', source: 'Nord' },
-    { name: 'Nord Aurora Red',    hex: '#bf616a', source: 'Nord' },
-    { name: 'Nord Aurora Green',  hex: '#a3be8c', source: 'Nord' },
-    { name: 'Nord Aurora Purple', hex: '#b48ead', source: 'Nord' },
-    { name: 'Rose Pine Rose',     hex: '#ebbcba', source: 'Rose Pine' },
-    { name: 'Rose Pine Iris',     hex: '#c4a7e7', source: 'Rose Pine' },
-    { name: 'One Dark Orange',    hex: '#d19a66', source: 'One Dark' },
-    { name: 'One Dark Red',       hex: '#e06c75', source: 'One Dark' },
-    { name: 'Gruvbox Yellow',     hex: '#fabd2f', source: 'Gruvbox' },
-    { name: 'Gruvbox Aqua',       hex: '#8ec07c', source: 'Gruvbox' },
+    // Neon
+    { name: 'Electric Blue',    hex: '#00b4ff', source: 'Neon' },
+    { name: 'Neon Pink',        hex: '#ff2d78', source: 'Neon' },
+    { name: 'Violet Flash',     hex: '#7c3aff', source: 'Neon' },
+    { name: 'Laser Cyan',       hex: '#00e5ff', source: 'Neon' },
+    { name: 'Lime Volt',        hex: '#aaff00', source: 'Neon' },
+    { name: 'Red Laser',        hex: '#ff1e3c', source: 'Neon' },
+    // Solar
+    { name: 'Solar Orange',     hex: '#ff6500', source: 'Solar' },
+    { name: 'Golden Hour',      hex: '#ffb300', source: 'Solar' },
+    { name: 'Amber Flash',      hex: '#ff8f00', source: 'Solar' },
+    { name: 'Tangerine',        hex: '#ff5500', source: 'Solar' },
+    // Plasma
+    { name: 'Plasma Magenta',   hex: '#e040fb', source: 'Plasma' },
+    { name: 'Deep Magenta',     hex: '#cc00ff', source: 'Plasma' },
+    { name: 'Hot Pink',         hex: '#ff0066', source: 'Plasma' },
+    { name: 'Orchid',           hex: '#cc44ff', source: 'Plasma' },
+    // Vivid
+    { name: 'Coral Flash',      hex: '#ff4757', source: 'Vivid' },
+    { name: 'Sky Spark',        hex: '#38c8ff', source: 'Vivid' },
+    { name: 'Cobalt Blue',      hex: '#4489ff', source: 'Vivid' },
+    { name: 'Aqua Spark',       hex: '#00b8e6', source: 'Vivid' },
+    // Aurora
+    { name: 'Aurora Green',     hex: '#00e676', source: 'Aurora' },
+    { name: 'Teal Spark',       hex: '#00d2a8', source: 'Aurora' },
+    { name: 'Mint Ice',         hex: '#5dffe0', source: 'Aurora' },
+    { name: 'Jade Spark',       hex: '#00c97a', source: 'Aurora' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -45,14 +52,20 @@ class ProjectItem extends vscode.TreeItem {
         public readonly contextVal: string,
         public readonly color?: string,
         private readonly storagePath?: string,
+        isOpen: boolean = false,
     ) {
         super(path.basename(projectPath), vscode.TreeItemCollapsibleState.None);
         this.description = `#${index + 1}`;
-        this.tooltip = projectPath;
+        this.tooltip = `${projectPath}\n${isOpen ? '● Open' : '○ Closed'}`;
         this.contextValue = contextVal;
         this.iconPath = storagePath
-            ? getColoredFolderIcon(color ?? null, storagePath)
+            ? getColoredFolderIcon(color ?? null, isOpen, storagePath)
             : new vscode.ThemeIcon('folder');
+        this.command = {
+            command: 'projectcycle.activateProject',
+            title: isOpen ? 'Focus Window' : 'Open Project',
+            arguments: [projectPath, isOpen],
+        };
     }
 }
 
@@ -74,7 +87,7 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
         const cfg = vscode.workspace.getConfiguration('projectcycle');
         const paths: string[] = cfg.get<string[]>(this.configKey) ?? [];
         const colors: Record<string, string> = cfg.get<Record<string, string>>('projectColors') ?? {};
-        return paths.map((p, i) => new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath));
+        return paths.map((p, i) => new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p)));
     }
 }
 
@@ -86,6 +99,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const storagePath = context.globalStorageUri.fsPath;
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath);
     const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath);
+
+    openWindowNames = queryOpenWindowNames();
 
     const priorityView = vscode.window.createTreeView('projectcycle.priorityView', {
         treeDataProvider: priorityProvider,
@@ -139,7 +154,10 @@ export function activate(context: vscode.ExtensionContext): void {
             await addCurrentTo('priorityProjects', 'priority');
             priorityProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.refreshPriorityView', () => priorityProvider.refresh()),
+        vscode.commands.registerCommand('projectcycle.refreshPriorityView', () => {
+            openWindowNames = queryOpenWindowNames();
+            priorityProvider.refresh();
+        }),
         vscode.commands.registerCommand('projectcycle.moveUp', async (item: ProjectItem) => {
             await moveInList('priorityProjects', item.projectPath, -1);
             priorityProvider.refresh();
@@ -158,7 +176,10 @@ export function activate(context: vscode.ExtensionContext): void {
             await addCurrentTo('allProjects', 'all projects');
             allProvider.refresh();
         }),
-        vscode.commands.registerCommand('projectcycle.refreshAllView', () => allProvider.refresh()),
+        vscode.commands.registerCommand('projectcycle.refreshAllView', () => {
+            openWindowNames = queryOpenWindowNames();
+            allProvider.refresh();
+        }),
         vscode.commands.registerCommand('projectcycle.moveUpAll', async (item: ProjectItem) => {
             await moveInList('allProjects', item.projectPath, -1);
             allProvider.refresh();
@@ -182,6 +203,14 @@ export function activate(context: vscode.ExtensionContext): void {
             priorityProvider.refresh();
         }),
 
+        vscode.commands.registerCommand('projectcycle.activateProject', async (projectPath: string, isOpen: boolean) => {
+            if (isOpen) {
+                focusWindow(path.basename(projectPath));
+            } else {
+                await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath), { forceNewWindow: true });
+            }
+        }),
+
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
             const cfg = vscode.workspace.getConfiguration('projectcycle');
             const colors: Record<string, string> = { ...(cfg.get<Record<string, string>>('projectColors') ?? {}) };
@@ -197,7 +226,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 label:       c.name,
                 description: c.hex,
                 detail:      `${c.source}${currentColor === c.hex ? '  ✓ active' : ''}`,
-                iconPath:    getColoredFolderIcon(c.hex, storagePath),
+                iconPath:    getColoredFolderIcon(c.hex, true, storagePath),
                 hex:         c.hex,
             }));
             pickerItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator } as ColorPickItem);
@@ -299,6 +328,30 @@ export function deactivate(): void {}
 // ---------------------------------------------------------------------------
 // Window utilities
 // ---------------------------------------------------------------------------
+
+function queryOpenWindowNames(): Set<string> {
+    const script = [
+        'tell application "System Events"',
+        '    tell process "Code"',
+        '        get name of every window',
+        '    end tell',
+        'end tell',
+    ].join('\n');
+    try {
+        const raw = execSync(`osascript -e '${script}'`, { timeout: 5000 }).toString().trim();
+        return new Set(raw.split(', '));
+    } catch {
+        return new Set();
+    }
+}
+
+function isProjectOpen(projectPath: string): boolean {
+    const name = path.basename(projectPath);
+    for (const w of openWindowNames) {
+        if (w.includes(name)) { return true; }
+    }
+    return false;
+}
 
 function focusWindow(folderName: string): boolean {
     const safe = folderName.replace(/"/g, '\\"');
@@ -413,20 +466,33 @@ function getContrastColor(hex: string): string {
     return lum > 0.5 ? '#1e1e2e' : '#ffffff';
 }
 
-function getColoredFolderIcon(color: string | null, storagePath: string): vscode.Uri {
+function getColoredFolderIcon(color: string | null, isOpen: boolean, storagePath: string): vscode.Uri {
     const iconDir = path.join(storagePath, 'icons');
-    const key = color ? color.replace('#', '') : 'none';
-    const iconPath = path.join(iconDir, `dot_${key}.svg`);
+    const colorKey = color ? color.replace('#', '') : 'none';
+    const stateKey = isOpen ? 'open' : 'closed';
+    const iconPath = path.join(iconDir, `dot_${colorKey}_${stateKey}.svg`);
     if (!fs.existsSync(iconPath)) {
         fs.mkdirSync(iconDir, { recursive: true });
         let svg: string;
-        if (color) {
+        if (color && isOpen) {
+            // filled colored circle
             const stroke = darkenHex(color, 0.3);
             svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
                 `<circle cx="8" cy="8" r="5" fill="${color}" stroke="${stroke}" stroke-width="1.5"/>` +
                 `</svg>`;
+        } else if (!color && isOpen) {
+            // filled grey circle
+            svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+                `<circle cx="8" cy="8" r="5" fill="#555566" stroke="#333344" stroke-width="1.5"/>` +
+                `</svg>`;
+        } else if (color && !isOpen) {
+            // hollow colored outline
+            const stroke = darkenHex(color, 0.15);
+            svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+                `<circle cx="8" cy="8" r="4.5" fill="none" stroke="${stroke}" stroke-width="1.5"/>` +
+                `</svg>`;
         } else {
-            // Neutral outline circle for uncolored items — keeps alignment identical
+            // hollow grey outline
             svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
                 `<circle cx="8" cy="8" r="4.5" fill="none" stroke="#555566" stroke-width="1.5"/>` +
                 `</svg>`;
@@ -443,15 +509,17 @@ async function applyProjectColor(hex: string): Promise<void> {
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
     await cfg.update('workbench.colorCustomizations', {
         ...cur,
-        'titleBar.activeBackground':      hex,
-        'titleBar.activeForeground':      fg,
-        'titleBar.inactiveBackground':    dark,
-        'titleBar.inactiveForeground':    fg + 'aa',
-        'activityBar.background':         hex,
-        'activityBar.foreground':         fg,
-        'activityBar.inactiveForeground': fg + '88',
-        'statusBar.background':           hex,
-        'statusBar.foreground':           fg,
+        'titleBar.activeBackground':           hex,
+        'titleBar.activeForeground':           fg,
+        'titleBar.inactiveBackground':         dark,
+        'titleBar.inactiveForeground':         fg + 'aa',
+        'activityBar.background':              hex,
+        'activityBar.activeBackground':        hex,
+        'activityBar.activeBorder':            fg + '00',
+        'activityBar.foreground':              fg,
+        'activityBar.inactiveForeground':      fg + '88',
+        'statusBar.background':                hex,
+        'statusBar.foreground':                fg,
     }, vscode.ConfigurationTarget.Workspace);
 }
 
@@ -459,7 +527,8 @@ async function removeProjectColor(): Promise<void> {
     const ours = [
         'titleBar.activeBackground', 'titleBar.activeForeground',
         'titleBar.inactiveBackground', 'titleBar.inactiveForeground',
-        'activityBar.background', 'activityBar.foreground', 'activityBar.inactiveForeground',
+        'activityBar.background', 'activityBar.activeBackground', 'activityBar.activeBorder',
+        'activityBar.foreground', 'activityBar.inactiveForeground',
         'statusBar.background', 'statusBar.foreground',
     ];
     const cfg  = vscode.workspace.getConfiguration();
