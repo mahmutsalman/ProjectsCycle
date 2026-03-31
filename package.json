@@ -37,7 +37,7 @@
         },
         {
           "id": "projectcycle.allView",
-          "name": "All Projects (Ctrl+Shift+,)"
+          "name": "All Projects (Ctrl+.)"
         }
       ]
     },
@@ -188,8 +188,8 @@
       },
       {
         "command": "projectcycle.cycleAll",
-        "key": "ctrl+shift+,",
-        "mac": "ctrl+shift+,"
+        "key": "ctrl+.",
+        "mac": "ctrl+."
       }
     ],
     "configuration": {
