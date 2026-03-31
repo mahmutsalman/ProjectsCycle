@@ -108,6 +108,10 @@
       {
         "command": "projectcycle.activateProject",
         "title": "Open / Focus Project"
+      },
+      {
+        "command": "projectcycle.timerMenu",
+        "title": "ProjectCycle: Timer Controls"
       }
     ],
     "menus": {

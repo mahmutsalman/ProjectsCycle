@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';//
-import * as path from 'path';
+import * as path from 'path';//////
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 
@@ -77,6 +77,11 @@ class TimeTracker {
 
     addSeconds(projectPath: string, n: number): void {
         this.data[projectPath] = (this.data[projectPath] ?? 0) + n;
+        this.save();
+    }
+
+    resetProject(projectPath: string): void {
+        delete this.data[projectPath];
         this.save();
     }
 
@@ -386,6 +391,89 @@ export function activate(context: vscode.ExtensionContext): void {
     let lastActivityTime: number | null = null;
     let idlePromptInFlight = false;
     let activeTerminalExecutions = 0;
+    let timerStopped = false;
+
+    // --- Status bar item ---
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -9999);
+    statusBarItem.command = 'projectcycle.timerMenu';
+    statusBarItem.text = '$(watch) —';
+    statusBarItem.tooltip = 'ProjectCycle timer';
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
+
+    function updateStatusBar(): void {
+        if (!currentProject) {
+            statusBarItem.text = `$(watch) —`;
+            statusBarItem.tooltip = 'ProjectCycle: no workspace open';
+            statusBarItem.backgroundColor = undefined;
+            return;
+        }
+        const timeStr = tracker.format(tracker.getSeconds(currentProject)) || '< 1m';
+        const isActiveTick = !timerStopped && (
+            (lastActivityTime !== null && Date.now() - lastActivityTime < ACTIVE_WINDOW_MS) ||
+            activeTerminalExecutions > 0
+        );
+        if (timerStopped) {
+            statusBarItem.text = `$(debug-pause) ${timeStr}`;
+            statusBarItem.tooltip = `ProjectCycle: timer stopped — click to manage`;
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        } else if (isActiveTick) {
+            statusBarItem.text = `$(circle-filled) ${timeStr}`;
+            statusBarItem.tooltip = `ProjectCycle: counting — ${path.basename(currentProject)}\nClick to stop or reset`;
+            statusBarItem.backgroundColor = undefined;
+        } else {
+            statusBarItem.text = `$(circle-large-outline) ${timeStr}`;
+            statusBarItem.tooltip = `ProjectCycle: idle — ${path.basename(currentProject)}\nClick to stop or reset`;
+            statusBarItem.backgroundColor = undefined;
+        }
+    }
+
+    updateStatusBar();
+
+    // --- Timer menu command ---
+    context.subscriptions.push(
+        vscode.commands.registerCommand('projectcycle.timerMenu', async () => {
+            if (!currentProject) { return; }
+            const projectName = path.basename(currentProject);
+            const timeStr = tracker.format(tracker.getSeconds(currentProject)) || '< 1m';
+
+            type MenuItem = vscode.QuickPickItem & { action: string };
+            const items: MenuItem[] = timerStopped
+                ? [
+                    { label: '$(play) Continue', description: `Resume timing for ${projectName}`, action: 'continue' },
+                    { label: '$(trash) Reset', description: `Clear all tracked time for ${projectName} (${timeStr})`, action: 'reset' },
+                ]
+                : [
+                    { label: '$(debug-pause) Stop Timing', description: `Pause timer for ${projectName}`, action: 'stop' },
+                    { label: '$(trash) Reset', description: `Clear all tracked time for ${projectName} (${timeStr})`, action: 'reset' },
+                ];
+
+            const picked = await vscode.window.showQuickPick(items, {
+                title: `ProjectCycle Timer — ${projectName}  ${timeStr}`,
+                placeHolder: 'Choose an action',
+            }) as MenuItem | undefined;
+
+            if (!picked) { return; }
+
+            if (picked.action === 'stop') {
+                timerStopped = true;
+            } else if (picked.action === 'continue') {
+                timerStopped = false;
+                lastActivityTime = Date.now();
+            } else if (picked.action === 'reset') {
+                const confirm = await vscode.window.showWarningMessage(
+                    `Reset all tracked time for "${projectName}"?`,
+                    { modal: true },
+                    'Reset',
+                );
+                if (confirm === 'Reset') {
+                    tracker.resetProject(currentProject);
+                    refreshTree();
+                }
+            }
+            updateStatusBar();
+        }),
+    );
 
     function refreshTree(): void {
         priorityProvider.refresh();
@@ -393,7 +481,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     function recordActivity(): void {
-        if (!currentProject) { return; }
+        if (!currentProject || timerStopped) { return; }
         const now = Date.now();
 
         if (lastActivityTime !== null && !idlePromptInFlight) {
@@ -413,18 +501,24 @@ export function activate(context: vscode.ExtensionContext): void {
                     }
                     lastActivityTime = Date.now();
                     idlePromptInFlight = false;
+                    updateStatusBar();
                 });
                 return;
             }
         }
 
         lastActivityTime = now;
+        updateStatusBar();
     }
 
     context.subscriptions.push(
         vscode.workspace.onDidChangeTextDocument(() => recordActivity()),
         vscode.workspace.onDidSaveTextDocument(() => recordActivity()),
         vscode.window.onDidChangeActiveTextEditor(() => recordActivity()),
+        // Fires when user switches focus to a terminal (e.g. clicks into Claude Code)
+        vscode.window.onDidChangeActiveTerminal(terminal => {
+            if (terminal) { recordActivity(); }
+        }),
         vscode.window.onDidStartTerminalShellExecution(() => {
             activeTerminalExecutions++;
             recordActivity();
@@ -435,17 +529,31 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
     );
 
+    // Terminal heartbeat: while shell integration confirms a command is running
+    // (e.g. an active Claude Code session), keep lastActivityTime fresh every 30s
+    // so the main 60s tick keeps counting without needing per-keystroke events.
+    // Note: requires VS Code shell integration to be active (default for zsh/bash).
+    const terminalHeartbeat = setInterval(() => {
+        if (!currentProject || timerStopped || activeTerminalExecutions === 0) { return; }
+        lastActivityTime = Date.now();
+        updateStatusBar();
+    }, 30_000);
+
     const timer = setInterval(() => {
-        if (!currentProject) { return; }
+        if (!currentProject || timerStopped) { return; }
         const recentEditorActivity = lastActivityTime !== null && Date.now() - lastActivityTime < ACTIVE_WINDOW_MS;
         const terminalSessionRunning = activeTerminalExecutions > 0;
         if (recentEditorActivity || terminalSessionRunning) {
             tracker.addSeconds(currentProject, 60);
             refreshTree();
         }
+        updateStatusBar();
     }, 60_000);
 
-    context.subscriptions.push({ dispose: () => clearInterval(timer) });
+    context.subscriptions.push(
+        { dispose: () => clearInterval(terminalHeartbeat) },
+        { dispose: () => clearInterval(timer) },
+    );
 }
 
 export function deactivate(): void {}
