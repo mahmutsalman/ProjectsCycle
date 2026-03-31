@@ -67,6 +67,8 @@ class TimeTracker {
         } catch { this.data = {}; }
     }
 
+    reload(): void { this.load(); }
+
     save(): void {
         try {
             fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
@@ -338,6 +340,7 @@ export function activate(context: vscode.ExtensionContext): void {
             priorityProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshPriorityView', () => {
+            tracker.reload();
             openWindowNames = queryOpenWindowNames();
             priorityProvider.refresh();
         }),
@@ -360,6 +363,7 @@ export function activate(context: vscode.ExtensionContext): void {
             allProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshAllView', () => {
+            tracker.reload();
             openWindowNames = queryOpenWindowNames();
             allProvider.refresh();
         }),
