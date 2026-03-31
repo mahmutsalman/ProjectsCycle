@@ -761,14 +761,20 @@ export function activate(context: vscode.ExtensionContext): void {
     // (e.g. an active Claude Code session), keep lastActivityTime fresh every 30s
     // so the main 60s tick keeps counting without needing per-keystroke events.
     // Note: requires VS Code shell integration to be active (default for zsh/bash).
+    // Only runs while this window is focused — prevents background accumulation.
     const terminalHeartbeat = setInterval(() => {
         if (!currentProject || timerStopped || activeTerminalExecutions === 0) { return; }
+        if (!vscode.window.state.focused) { return; }
         lastActivityTime = Date.now();
         updateStatusBar();
     }, 30_000);
 
     const timer = setInterval(() => {
         if (!currentProject || timerStopped) { return; }
+        // Only count time when this window is focused. Without this guard, a
+        // running terminal process would accumulate time in the background while
+        // the user works in other VS Code windows.
+        if (!vscode.window.state.focused) { return; }
         const recentEditorActivity = lastActivityTime !== null && Date.now() - lastActivityTime < ACTIVE_WINDOW_MS;
         const terminalSessionRunning = activeTerminalExecutions > 0;
         if (recentEditorActivity || terminalSessionRunning) {
