@@ -50,8 +50,8 @@ class ProjectItem extends vscode.TreeItem {
         this.description = `#${index + 1}`;
         this.tooltip = projectPath;
         this.contextValue = contextVal;
-        this.iconPath = (color && storagePath)
-            ? getColoredFolderIcon(color, storagePath)
+        this.iconPath = storagePath
+            ? getColoredFolderIcon(color ?? null, storagePath)
             : new vscode.ThemeIcon('folder');
     }
 }
@@ -413,15 +413,24 @@ function getContrastColor(hex: string): string {
     return lum > 0.5 ? '#1e1e2e' : '#ffffff';
 }
 
-function getColoredFolderIcon(color: string, storagePath: string): vscode.Uri {
+function getColoredFolderIcon(color: string | null, storagePath: string): vscode.Uri {
     const iconDir = path.join(storagePath, 'icons');
-    const iconPath = path.join(iconDir, `dot_${color.replace('#', '')}.svg`);
+    const key = color ? color.replace('#', '') : 'none';
+    const iconPath = path.join(iconDir, `dot_${key}.svg`);
     if (!fs.existsSync(iconPath)) {
         fs.mkdirSync(iconDir, { recursive: true });
-        const stroke = darkenHex(color, 0.3);
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
-            `<circle cx="8" cy="8" r="5" fill="${color}" stroke="${stroke}" stroke-width="1.5"/>` +
-            `</svg>`;
+        let svg: string;
+        if (color) {
+            const stroke = darkenHex(color, 0.3);
+            svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+                `<circle cx="8" cy="8" r="5" fill="${color}" stroke="${stroke}" stroke-width="1.5"/>` +
+                `</svg>`;
+        } else {
+            // Neutral outline circle for uncolored items — keeps alignment identical
+            svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+                `<circle cx="8" cy="8" r="4.5" fill="none" stroke="#555566" stroke-width="1.5"/>` +
+                `</svg>`;
+        }
         fs.writeFileSync(iconPath, svg, 'utf8');
     }
     return vscode.Uri.file(iconPath);
