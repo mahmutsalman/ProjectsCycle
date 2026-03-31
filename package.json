@@ -1,0 +1,188 @@
+{
+  "name": "projectcycle",
+  "displayName": "ProjectCycle",
+  "description": "Cycle through open VSCode windows with priority ordering",
+  "version": "0.0.1",
+  "publisher": "mahmutsalman",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0e0e1a",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "projectcycle-sidebar",
+          "title": "ProjectCycle",
+          "icon": "images/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "projectcycle-sidebar": [
+        {
+          "id": "projectcycle.priorityView",
+          "name": "Priority Cycle (Ctrl+.)"
+        },
+        {
+          "id": "projectcycle.allView",
+          "name": "All Projects (Ctrl+Shift+.)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "projectcycle.cyclePriority",
+        "title": "ProjectCycle: Cycle Priority Projects"
+      },
+      {
+        "command": "projectcycle.cycleAll",
+        "title": "ProjectCycle: Cycle All Projects"
+      },
+      {
+        "command": "projectcycle.addCurrent",
+        "title": "Add Current Project",
+        "icon": "$(add)"
+      },
+      {
+        "command": "projectcycle.refreshPriorityView",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "projectcycle.moveUp",
+        "title": "Move Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "projectcycle.moveDown",
+        "title": "Move Down",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "projectcycle.deleteProject",
+        "title": "Remove from Priority Cycle",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "projectcycle.addCurrentToAll",
+        "title": "Add Current Project",
+        "icon": "$(add)"
+      },
+      {
+        "command": "projectcycle.refreshAllView",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "projectcycle.moveUpAll",
+        "title": "Move Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "projectcycle.moveDownAll",
+        "title": "Move Down",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "projectcycle.deleteProjectAll",
+        "title": "Remove from All Projects",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "projectcycle.addCurrent",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "projectcycle.refreshPriorityView",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "projectcycle.addCurrentToAll",
+          "when": "view == projectcycle.allView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "projectcycle.refreshAllView",
+          "when": "view == projectcycle.allView",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "projectcycle.moveUp",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "projectcycle.moveDown",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "group": "inline@2"
+        },
+        {
+          "command": "projectcycle.deleteProject",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "group": "inline@3"
+        },
+        {
+          "command": "projectcycle.moveUpAll",
+          "when": "view == projectcycle.allView && viewItem == allItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "projectcycle.moveDownAll",
+          "when": "view == projectcycle.allView && viewItem == allItem",
+          "group": "inline@2"
+        },
+        {
+          "command": "projectcycle.deleteProjectAll",
+          "when": "view == projectcycle.allView && viewItem == allItem",
+          "group": "inline@3"
+        }
+      ]
+    },
+    "keybindings": [],
+    "configuration": {
+      "title": "ProjectCycle",
+      "properties": {
+        "projectcycle.priorityProjects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Ordered list of absolute paths for Ctrl+. cycle"
+        },
+        "projectcycle.allProjects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Ordered list of absolute paths for Ctrl+Shift+. cycle"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

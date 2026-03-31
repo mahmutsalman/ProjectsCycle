@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <!-- Circular arrow (300° arc) -->
+  <path d="M 8 2 A 6 6 0 1 1 3.5 12.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- Arrowhead at end of arc -->
+  <polyline points="6,10 3.5,12.2 5.8,14.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
