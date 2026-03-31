@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import * as vscode from 'vscode';//
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
@@ -42,6 +42,53 @@ const COLOR_PALETTE: ThemeColor[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Time Tracker
+// ---------------------------------------------------------------------------
+
+interface TimeData { [projectPath: string]: number; }
+
+class TimeTracker {
+    private data: TimeData = {};
+    private readonly filePath: string;
+
+    constructor(storagePath: string) {
+        this.filePath = path.join(storagePath, 'time-data.json');
+        this.load();
+    }
+
+    private load(): void {
+        try {
+            if (fs.existsSync(this.filePath)) {
+                this.data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+            }
+        } catch { this.data = {}; }
+    }
+
+    save(): void {
+        try {
+            fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+            fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf8');
+        } catch {}
+    }
+
+    getSeconds(projectPath: string): number {
+        return this.data[projectPath] ?? 0;
+    }
+
+    addSeconds(projectPath: string, n: number): void {
+        this.data[projectPath] = (this.data[projectPath] ?? 0) + n;
+        this.save();
+    }
+
+    format(seconds: number): string {
+        if (seconds < 60) { return ''; }
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar Tree Views
 // ---------------------------------------------------------------------------
 
@@ -53,9 +100,10 @@ class ProjectItem extends vscode.TreeItem {
         public readonly color?: string,
         private readonly storagePath?: string,
         isOpen: boolean = false,
+        timeStr?: string,
     ) {
         super(path.basename(projectPath), vscode.TreeItemCollapsibleState.None);
-        this.description = `#${index + 1}`;
+        this.description = timeStr ? `#${index + 1}  ${timeStr}` : `#${index + 1}`;
         this.tooltip = `${projectPath}\n${isOpen ? '● Open' : '○ Closed'}`;
         this.contextValue = contextVal;
         this.iconPath = storagePath
@@ -77,6 +125,7 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
         private readonly configKey: string,
         private readonly contextVal: string,
         private readonly storagePath: string,
+        private readonly tracker: TimeTracker,
     ) {}
 
     refresh(): void { this._onDidChangeTreeData.fire(); }
@@ -87,7 +136,10 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
         const cfg = vscode.workspace.getConfiguration('projectcycle');
         const paths: string[] = cfg.get<string[]>(this.configKey) ?? [];
         const colors: Record<string, string> = cfg.get<Record<string, string>>('projectColors') ?? {};
-        return paths.map((p, i) => new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p)));
+        return paths.map((p, i) => {
+            const timeStr = this.tracker.format(this.tracker.getSeconds(p));
+            return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
+        });
     }
 }
 
@@ -97,8 +149,11 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
 
 export function activate(context: vscode.ExtensionContext): void {
     const storagePath = context.globalStorageUri.fsPath;
-    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath);
-    const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath);
+    const tracker = new TimeTracker(storagePath);
+    const currentProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker);
+    const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker);
 
     openWindowNames = queryOpenWindowNames();
 
@@ -121,19 +176,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }, null, context.subscriptions);
 
     // Auto-register this window's workspace into allProjects on startup
-    const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (currentFolder) {
+    if (currentProject) {
         const config = vscode.workspace.getConfiguration('projectcycle');
         const allList: string[] = [...(config.get<string[]>('allProjects') ?? [])];
-        if (!allList.includes(currentFolder)) {
-            allList.push(currentFolder);
+        if (!allList.includes(currentProject)) {
+            allList.push(currentProject);
             config.update('allProjects', allList, vscode.ConfigurationTarget.Global).then(() => {
                 allProvider.refresh();
             });
         }
         // Apply this project's color to workbench on startup
         const projectColors = config.get<Record<string, string>>('projectColors') ?? {};
-        const startupColor = projectColors[currentFolder];
+        const startupColor = projectColors[currentProject];
         if (startupColor) {
             applyProjectColor(startupColor);
         } else {
@@ -250,7 +304,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
             let accepted = false;
 
-            // Live preview as arrow keys move selection
+            // Live preview via arrow keys
             qp.onDidChangeActive(active => {
                 const a = active[0] as ColorPickItem | undefined;
                 if (isActiveProject && a?.hex) {
@@ -321,6 +375,77 @@ export function activate(context: vscode.ExtensionContext): void {
             if (isActiveProject) { await applyProjectColor(finalHex); }
         }),
     );
+
+    // -------------------------------------------------------------------------
+    // Time Tracking
+    // -------------------------------------------------------------------------
+
+    const IDLE_THRESHOLD_MS = 10 * 60 * 1000;  // 10 minutes
+    const ACTIVE_WINDOW_MS  =  2 * 60 * 1000;  // still active if last event < 2 min ago
+
+    let lastActivityTime: number | null = null;
+    let idlePromptInFlight = false;
+    let activeTerminalExecutions = 0;
+
+    function refreshTree(): void {
+        priorityProvider.refresh();
+        allProvider.refresh();
+    }
+
+    function recordActivity(): void {
+        if (!currentProject) { return; }
+        const now = Date.now();
+
+        if (lastActivityTime !== null && !idlePromptInFlight) {
+            const gap = now - lastActivityTime;
+            if (gap > IDLE_THRESHOLD_MS) {
+                idlePromptInFlight = true;
+                const mins = Math.round(gap / 60000);
+                const projectName = path.basename(currentProject);
+                vscode.window.showInformationMessage(
+                    `ProjectCycle: Were you still working on "${projectName}" during the last ${mins} minutes?`,
+                    'Yes, add it',
+                    'No, skip',
+                ).then(answer => {
+                    if (answer === 'Yes, add it') {
+                        tracker.addSeconds(currentProject!, Math.floor(gap / 1000));
+                        refreshTree();
+                    }
+                    lastActivityTime = Date.now();
+                    idlePromptInFlight = false;
+                });
+                return;
+            }
+        }
+
+        lastActivityTime = now;
+    }
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(() => recordActivity()),
+        vscode.workspace.onDidSaveTextDocument(() => recordActivity()),
+        vscode.window.onDidChangeActiveTextEditor(() => recordActivity()),
+        vscode.window.onDidStartTerminalShellExecution(() => {
+            activeTerminalExecutions++;
+            recordActivity();
+        }),
+        vscode.window.onDidEndTerminalShellExecution(() => {
+            activeTerminalExecutions = Math.max(0, activeTerminalExecutions - 1);
+            recordActivity();
+        }),
+    );
+
+    const timer = setInterval(() => {
+        if (!currentProject) { return; }
+        const recentEditorActivity = lastActivityTime !== null && Date.now() - lastActivityTime < ACTIVE_WINDOW_MS;
+        const terminalSessionRunning = activeTerminalExecutions > 0;
+        if (recentEditorActivity || terminalSessionRunning) {
+            tracker.addSeconds(currentProject, 60);
+            refreshTree();
+        }
+    }, 60_000);
+
+    context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
 export function deactivate(): void {}
