@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { execSync } from 'child_process';
 
 let openWindowNames: Set<string> = new Set();
@@ -232,10 +233,61 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
 }
 
 // ---------------------------------------------------------------------------
+// Keybinding injection — ensures ctrl+. override is in user keybindings.json
+// ---------------------------------------------------------------------------
+
+function ensureCycleAllKeybinding(context: vscode.ExtensionContext): void {
+    const stateKey = 'keybindingInjected_v1';
+    if (context.globalState.get(stateKey)) { return; }
+
+    try {
+        // Derive the VS Code variant folder name (Code, Code - Insiders, Cursor, etc.)
+        const appFolder = vscode.env.appName.replace('Visual Studio ', '');
+
+        let keybindingsPath: string;
+        if (process.platform === 'darwin') {
+            keybindingsPath = path.join(os.homedir(), 'Library', 'Application Support', appFolder, 'User', 'keybindings.json');
+        } else if (process.platform === 'win32') {
+            keybindingsPath = path.join(process.env.APPDATA ?? os.homedir(), appFolder, 'User', 'keybindings.json');
+        } else {
+            keybindingsPath = path.join(os.homedir(), '.config', appFolder, 'User', 'keybindings.json');
+        }
+
+        let content = fs.existsSync(keybindingsPath)
+            ? fs.readFileSync(keybindingsPath, 'utf8').trim()
+            : '[]';
+
+        // Already injected (maybe manually by user)
+        if (content.includes('projectcycle.cycleAll')) {
+            context.globalState.update(stateKey, true);
+            return;
+        }
+
+        const entry = `    {\n        "key": "ctrl+.",\n        "command": "projectcycle.cycleAll"\n    }`;
+
+        if (!content || content === '[]') {
+            content = `[\n${entry}\n]`;
+        } else {
+            const lastBracket = content.lastIndexOf(']');
+            const before = content.slice(0, lastBracket).trimEnd();
+            const separator = before.endsWith(',') ? '' : ',';
+            content = before + separator + '\n' + entry + '\n]';
+        }
+
+        fs.writeFileSync(keybindingsPath, content, 'utf8');
+        context.globalState.update(stateKey, true);
+    } catch {
+        // Non-critical — extension still works, user can add manually
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Activate
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
+    ensureCycleAllKeybinding(context);
+
     const storagePath = context.globalStorageUri.fsPath;
     store = new ProjectStore(storagePath);
     const tracker = new TimeTracker(storagePath);
