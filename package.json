@@ -99,6 +99,11 @@
         "command": "projectcycle.deleteProjectAll",
         "title": "Remove from All Projects",
         "icon": "$(trash)"
+      },
+      {
+        "command": "projectcycle.assignColor",
+        "title": "Assign Color",
+        "icon": "$(symbol-color)"
       }
     ],
     "menus": {
@@ -154,6 +159,16 @@
           "command": "projectcycle.deleteProjectAll",
           "when": "view == projectcycle.allView && viewItem == allItem",
           "group": "inline@3"
+        },
+        {
+          "command": "projectcycle.assignColor",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "projectcycle.assignColor",
+          "when": "view == projectcycle.allView && viewItem == allItem",
+          "group": "1_actions@1"
         }
       ]
     },
@@ -172,6 +187,11 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Ordered list of absolute paths for Ctrl+Shift+. cycle"
+        },
+        "projectcycle.projectColors": {
+          "type": "object",
+          "default": {},
+          "description": "Map of absolute project path to hex color string (e.g. { \"/path/to/project\": \"#bd93f9\" })"
         }
       }
     }

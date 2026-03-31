@@ -1,6 +1,38 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { execSync } from 'child_process';
+
+// ---------------------------------------------------------------------------
+// Color Palette
+// ---------------------------------------------------------------------------
+
+interface ThemeColor { name: string; hex: string; source: string; }
+
+const COLOR_PALETTE: ThemeColor[] = [
+    { name: 'Dracula Purple',     hex: '#bd93f9', source: 'Dracula' },
+    { name: 'Dracula Pink',       hex: '#ff79c6', source: 'Dracula' },
+    { name: 'Dracula Cyan',       hex: '#8be9fd', source: 'Dracula' },
+    { name: 'Dracula Green',      hex: '#50fa7b', source: 'Dracula' },
+    { name: 'Catppuccin Mauve',   hex: '#cba6f7', source: 'Catppuccin' },
+    { name: 'Catppuccin Peach',   hex: '#fab387', source: 'Catppuccin' },
+    { name: 'Catppuccin Sky',     hex: '#89dceb', source: 'Catppuccin' },
+    { name: 'Catppuccin Green',   hex: '#a6e3a1', source: 'Catppuccin' },
+    { name: 'Tokyo Blue',         hex: '#7aa2f7', source: 'Tokyo Night' },
+    { name: 'Tokyo Purple',       hex: '#9d7cd8', source: 'Tokyo Night' },
+    { name: 'Tokyo Cyan',         hex: '#7dcfff', source: 'Tokyo Night' },
+    { name: 'Tokyo Green',        hex: '#9ece6a', source: 'Tokyo Night' },
+    { name: 'Nord Frost Blue',    hex: '#88c0d0', source: 'Nord' },
+    { name: 'Nord Aurora Red',    hex: '#bf616a', source: 'Nord' },
+    { name: 'Nord Aurora Green',  hex: '#a3be8c', source: 'Nord' },
+    { name: 'Nord Aurora Purple', hex: '#b48ead', source: 'Nord' },
+    { name: 'Rose Pine Rose',     hex: '#ebbcba', source: 'Rose Pine' },
+    { name: 'Rose Pine Iris',     hex: '#c4a7e7', source: 'Rose Pine' },
+    { name: 'One Dark Orange',    hex: '#d19a66', source: 'One Dark' },
+    { name: 'One Dark Red',       hex: '#e06c75', source: 'One Dark' },
+    { name: 'Gruvbox Yellow',     hex: '#fabd2f', source: 'Gruvbox' },
+    { name: 'Gruvbox Aqua',       hex: '#8ec07c', source: 'Gruvbox' },
+];
 
 // ---------------------------------------------------------------------------
 // Sidebar Tree Views
@@ -11,12 +43,16 @@ class ProjectItem extends vscode.TreeItem {
         public readonly projectPath: string,
         public readonly index: number,
         public readonly contextVal: string,
+        public readonly color?: string,
+        private readonly storagePath?: string,
     ) {
         super(path.basename(projectPath), vscode.TreeItemCollapsibleState.None);
         this.description = `#${index + 1}`;
         this.tooltip = projectPath;
         this.contextValue = contextVal;
-        this.iconPath = new vscode.ThemeIcon('folder');
+        this.iconPath = (color && storagePath)
+            ? getColoredFolderIcon(color, storagePath)
+            : new vscode.ThemeIcon('folder');
     }
 }
 
@@ -24,15 +60,21 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
     private _onDidChangeTreeData = new vscode.EventEmitter<void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-    constructor(private readonly configKey: string, private readonly contextVal: string) {}
+    constructor(
+        private readonly configKey: string,
+        private readonly contextVal: string,
+        private readonly storagePath: string,
+    ) {}
 
     refresh(): void { this._onDidChangeTreeData.fire(); }
 
     getTreeItem(element: ProjectItem): vscode.TreeItem { return element; }
 
     getChildren(): ProjectItem[] {
-        const paths: string[] = vscode.workspace.getConfiguration('projectcycle').get<string[]>(this.configKey) ?? [];
-        return paths.map((p, i) => new ProjectItem(p, i, this.contextVal));
+        const cfg = vscode.workspace.getConfiguration('projectcycle');
+        const paths: string[] = cfg.get<string[]>(this.configKey) ?? [];
+        const colors: Record<string, string> = cfg.get<Record<string, string>>('projectColors') ?? {};
+        return paths.map((p, i) => new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath));
     }
 }
 
@@ -41,8 +83,9 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
-    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem');
-    const allProvider = new ProjectsProvider('allProjects', 'allItem');
+    const storagePath = context.globalStorageUri.fsPath;
+    const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath);
+    const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath);
 
     const priorityView = vscode.window.createTreeView('projectcycle.priorityView', {
         treeDataProvider: priorityProvider,
@@ -56,6 +99,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('projectcycle.priorityProjects')) { priorityProvider.refresh(); }
         if (e.affectsConfiguration('projectcycle.allProjects')) { allProvider.refresh(); }
+        if (e.affectsConfiguration('projectcycle.projectColors')) {
+            priorityProvider.refresh();
+            allProvider.refresh();
+        }
     }, null, context.subscriptions);
 
     // Auto-register this window's workspace into allProjects on startup
@@ -68,6 +115,14 @@ export function activate(context: vscode.ExtensionContext): void {
             config.update('allProjects', allList, vscode.ConfigurationTarget.Global).then(() => {
                 allProvider.refresh();
             });
+        }
+        // Apply this project's color to workbench on startup
+        const projectColors = config.get<Record<string, string>>('projectColors') ?? {};
+        const startupColor = projectColors[currentFolder];
+        if (startupColor) {
+            applyProjectColor(startupColor);
+        } else {
+            removeProjectColor();
         }
     }
 
@@ -125,6 +180,116 @@ export function activate(context: vscode.ExtensionContext): void {
             const list: string[] = config.get<string[]>('priorityProjects') ?? [];
             await config.update('priorityProjects', list.filter(p => p !== currentPath), vscode.ConfigurationTarget.Global);
             priorityProvider.refresh();
+        }),
+
+        vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
+            const cfg = vscode.workspace.getConfiguration('projectcycle');
+            const colors: Record<string, string> = { ...(cfg.get<Record<string, string>>('projectColors') ?? {}) };
+            const currentColor = colors[item.projectPath];
+            const isActiveProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath === item.projectPath;
+
+            // Snapshot workbench colors so we can restore on cancel
+            const originalWorkbenchColors = vscode.workspace.getConfiguration()
+                .inspect('workbench.colorCustomizations')?.workspaceValue;
+
+            type ColorPickItem = vscode.QuickPickItem & { hex?: string; action?: 'remove' | 'custom' };
+            const pickerItems: ColorPickItem[] = COLOR_PALETTE.map(c => ({
+                label:       c.name,
+                description: c.hex,
+                detail:      `${c.source}${currentColor === c.hex ? '  ✓ active' : ''}`,
+                iconPath:    getColoredFolderIcon(c.hex, storagePath),
+                hex:         c.hex,
+            }));
+            pickerItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator } as ColorPickItem);
+            pickerItems.push({ label: '$(edit) Enter custom hex…', description: 'Any valid #rrggbb value', action: 'custom' });
+            if (currentColor) {
+                pickerItems.push({ label: '$(trash) Remove color', description: 'Restore default folder icon', action: 'remove' });
+            }
+
+            const qp = vscode.window.createQuickPick<ColorPickItem>();
+            qp.title = `Assign color to ${path.basename(item.projectPath)}`;
+            qp.placeholder = 'Pick a theme color or enter custom hex';
+            qp.matchOnDescription = true;
+            qp.matchOnDetail = true;
+            qp.items = pickerItems;
+
+            // Pre-select the current color if one exists
+            if (currentColor) {
+                const active = pickerItems.find(i => i.hex === currentColor);
+                if (active) { qp.activeItems = [active]; }
+            }
+
+            let accepted = false;
+
+            // Live preview as arrow keys move selection
+            qp.onDidChangeActive(active => {
+                const a = active[0] as ColorPickItem | undefined;
+                if (isActiveProject && a?.hex) {
+                    applyProjectColor(a.hex);
+                }
+            });
+
+            const result = await new Promise<ColorPickItem | undefined>(resolve => {
+                qp.onDidAccept(() => {
+                    accepted = true;
+                    resolve(qp.activeItems[0] as ColorPickItem | undefined);
+                    qp.hide();
+                });
+                qp.onDidHide(() => {
+                    if (!accepted) { resolve(undefined); }
+                    qp.dispose();
+                });
+                qp.show();
+            });
+
+            // Restore original colors on cancel
+            if (!result) {
+                if (isActiveProject) {
+                    await vscode.workspace.getConfiguration().update(
+                        'workbench.colorCustomizations',
+                        originalWorkbenchColors,
+                        vscode.ConfigurationTarget.Workspace
+                    );
+                }
+                return;
+            }
+
+            if (result.action === 'remove') {
+                delete colors[item.projectPath];
+                await cfg.update('projectColors', colors, vscode.ConfigurationTarget.Global);
+                if (isActiveProject) { await removeProjectColor(); }
+                return;
+            }
+
+            let finalHex: string | undefined;
+            if (result.action === 'custom') {
+                finalHex = await vscode.window.showInputBox({
+                    title: 'Custom hex color',
+                    prompt: 'Enter a hex color',
+                    placeHolder: '#rrggbb',
+                    value: currentColor ?? '#',
+                    validateInput: v => /^#[0-9a-fA-F]{6}$/.test(v) ? null : 'Must be #rrggbb format',
+                });
+                if (!finalHex) {
+                    // Restore on cancel from input box too
+                    if (isActiveProject) {
+                        await vscode.workspace.getConfiguration().update(
+                            'workbench.colorCustomizations',
+                            originalWorkbenchColors,
+                            vscode.ConfigurationTarget.Workspace
+                        );
+                    }
+                    return;
+                }
+                finalHex = finalHex.toLowerCase();
+            } else {
+                finalHex = result.hex;
+            }
+            if (!finalHex) { return; }
+
+            colors[item.projectPath] = finalHex;
+            await cfg.update('projectColors', colors, vscode.ConfigurationTarget.Global);
+            if (isActiveProject) { await applyProjectColor(finalHex); }
         }),
     );
 }
@@ -228,6 +393,75 @@ async function moveInList(configKey: string, projectPath: string, direction: -1 
     if (newIdx < 0 || newIdx >= list.length) { return; }
     [list[idx], list[newIdx]] = [list[newIdx], list[idx]];
     await config.update(configKey, list, vscode.ConfigurationTarget.Global);
+}
+
+// ---------------------------------------------------------------------------
+// Color utilities
+// ---------------------------------------------------------------------------
+
+function darkenHex(hex: string, amount: number): string {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const r = Math.max(0, Math.round(((n >> 16) & 0xff) * (1 - amount)));
+    const g = Math.max(0, Math.round(((n >> 8)  & 0xff) * (1 - amount)));
+    const b = Math.max(0, Math.round((n & 0xff)          * (1 - amount)));
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function getContrastColor(hex: string): string {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const lum = (0.299 * ((n >> 16) & 0xff) + 0.587 * ((n >> 8) & 0xff) + 0.114 * (n & 0xff)) / 255;
+    return lum > 0.5 ? '#1e1e2e' : '#ffffff';
+}
+
+function getColoredFolderIcon(color: string, storagePath: string): vscode.Uri {
+    const iconDir = path.join(storagePath, 'icons');
+    const iconPath = path.join(iconDir, `dot_${color.replace('#', '')}.svg`);
+    if (!fs.existsSync(iconPath)) {
+        fs.mkdirSync(iconDir, { recursive: true });
+        const stroke = darkenHex(color, 0.3);
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+            `<circle cx="8" cy="8" r="5" fill="${color}" stroke="${stroke}" stroke-width="1.5"/>` +
+            `</svg>`;
+        fs.writeFileSync(iconPath, svg, 'utf8');
+    }
+    return vscode.Uri.file(iconPath);
+}
+
+async function applyProjectColor(hex: string): Promise<void> {
+    const fg   = getContrastColor(hex);
+    const dark = darkenHex(hex, 0.2);
+    const cfg  = vscode.workspace.getConfiguration();
+    const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
+    await cfg.update('workbench.colorCustomizations', {
+        ...cur,
+        'titleBar.activeBackground':      hex,
+        'titleBar.activeForeground':      fg,
+        'titleBar.inactiveBackground':    dark,
+        'titleBar.inactiveForeground':    fg + 'aa',
+        'activityBar.background':         hex,
+        'activityBar.foreground':         fg,
+        'activityBar.inactiveForeground': fg + '88',
+        'statusBar.background':           hex,
+        'statusBar.foreground':           fg,
+    }, vscode.ConfigurationTarget.Workspace);
+}
+
+async function removeProjectColor(): Promise<void> {
+    const ours = [
+        'titleBar.activeBackground', 'titleBar.activeForeground',
+        'titleBar.inactiveBackground', 'titleBar.inactiveForeground',
+        'activityBar.background', 'activityBar.foreground', 'activityBar.inactiveForeground',
+        'statusBar.background', 'statusBar.foreground',
+    ];
+    const cfg  = vscode.workspace.getConfiguration();
+    const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
+    const cleaned: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cur)) {
+        if (!ours.includes(k)) { cleaned[k] = v; }
+    }
+    await cfg.update('workbench.colorCustomizations',
+        Object.keys(cleaned).length > 0 ? cleaned : undefined,
+        vscode.ConfigurationTarget.Workspace);
 }
 
 async function deleteFromList(configKey: string, projectPath: string, label: string): Promise<void> {
