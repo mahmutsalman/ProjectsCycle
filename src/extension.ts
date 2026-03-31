@@ -5,7 +5,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 
 let openWindowNames: Set<string> = new Set();
-let navHistory: string[] = [];
+let navHist: SharedNavHistory;
 let store: ProjectStore;
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,51 @@ class ProjectStore {
 }
 
 // ---------------------------------------------------------------------------
+// Shared Navigation History  (persisted to disk so all windows share it)
+// ---------------------------------------------------------------------------
+
+class SharedNavHistory {
+    private readonly filePath: string;
+
+    constructor(storagePath: string) {
+        this.filePath = path.join(storagePath, 'nav-history.json');
+    }
+
+    push(projectPath: string): void {
+        if (!projectPath) { return; }
+        const history = this.read();
+        if (history[history.length - 1] === projectPath) { return; }
+        history.push(projectPath);
+        if (history.length > 50) { history.shift(); }
+        this.write(history);
+    }
+
+    pop(): string | undefined {
+        const history = this.read();
+        if (history.length === 0) { return undefined; }
+        const last = history.pop()!;
+        this.write(history);
+        return last;
+    }
+
+    private read(): string[] {
+        try {
+            if (fs.existsSync(this.filePath)) {
+                return JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+            }
+        } catch {}
+        return [];
+    }
+
+    private write(history: string[]): void {
+        try {
+            fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+            fs.writeFileSync(this.filePath, JSON.stringify(history), 'utf8');
+        } catch {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar Tree Views
 // ---------------------------------------------------------------------------
 
@@ -293,6 +338,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const storagePath = context.globalStorageUri.fsPath;
     store = new ProjectStore(storagePath);
     const tracker = new TimeTracker(storagePath);
+    navHist = new SharedNavHistory(storagePath);
     const currentProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
@@ -392,20 +438,20 @@ export function activate(context: vscode.ExtensionContext): void {
             const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (isOpen) {
                 if (focusWindow(path.basename(projectPath))) {
-                    pushNavHistory(currentFolder ?? '');
+                    navHist.push(currentFolder ?? '');
                 }
             } else {
-                pushNavHistory(currentFolder ?? '');
+                navHist.push(currentFolder ?? '');
                 await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath), { forceNewWindow: true });
             }
         }),
 
         vscode.commands.registerCommand('projectcycle.goBack', () => {
-            if (navHistory.length === 0) {
+            const prev = navHist.pop();
+            if (!prev) {
                 vscode.window.showInformationMessage('ProjectCycle: No previous window in history.');
                 return;
             }
-            const prev = navHistory.pop()!;
             focusWindow(path.basename(prev));
         }),
 
@@ -765,20 +811,13 @@ function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: stri
     for (let i = 0; i < paths.length; i++) {
         const idx = (start + i) % paths.length;
         if (focusWindow(path.basename(paths[idx]))) {
-            pushNavHistory(currentFolder);
+            navHist.push(currentFolder);
             return;
         }
     }
     vscode.window.showInformationMessage(noneOpenMsg);
 }
 
-function pushNavHistory(projectPath: string): void {
-    if (!projectPath) { return; }
-    // Don't push consecutive duplicates
-    if (navHistory[navHistory.length - 1] === projectPath) { return; }
-    navHistory.push(projectPath);
-    if (navHistory.length > 50) { navHistory.shift(); }
-}
 
 // ---------------------------------------------------------------------------
 // Cycle commands
