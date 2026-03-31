@@ -4,4 +4,6 @@ out/
 .claude/
 .notes/
 CLAUDE.local.md
+CLAUDE.md
+docs/
 .vscode/settings.json

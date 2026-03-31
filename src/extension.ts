@@ -90,6 +90,11 @@ class TimeTracker {
         this.save();
     }
 
+    setSeconds(projectPath: string, n: number): void {
+        this.data[projectPath] = n;
+        this.save();
+    }
+
     format(seconds: number): string {
         if (seconds < 60) { return ''; }
         const h = Math.floor(seconds / 3600);
@@ -355,6 +360,40 @@ function ensureCycleAllKeybinding(context: vscode.ExtensionContext): void {
     } catch {
         // Non-critical — extension still works, user can add manually
     }
+}
+
+// ---------------------------------------------------------------------------
+// Time input parser  ("2h 30m" | "90m" | "1h" | "45" | "1:30") → seconds
+// ---------------------------------------------------------------------------
+
+function parseTimeInput(input: string): number | null {
+    const s = input.trim().toLowerCase();
+    if (!s) { return null; }
+
+    // h:mm  e.g. "1:30"
+    const colonMatch = s.match(/^(\d+):(\d{1,2})$/);
+    if (colonMatch) {
+        const h = parseInt(colonMatch[1], 10);
+        const m = parseInt(colonMatch[2], 10);
+        if (m >= 60) { return null; }
+        return (h * 3600) + (m * 60);
+    }
+
+    // mixed  e.g. "2h 30m", "1h30m", "2h", "30m", "30min"
+    const mixedMatch = s.match(/^(?:(\d+)\s*h(?:r|rs|our|ours)?)?\s*(?:(\d+)\s*m(?:in|ins|inutes?)?)?$/);
+    if (mixedMatch && (mixedMatch[1] || mixedMatch[2])) {
+        const h = parseInt(mixedMatch[1] ?? '0', 10);
+        const m = parseInt(mixedMatch[2] ?? '0', 10);
+        return (h * 3600) + (m * 60);
+    }
+
+    // bare number → minutes
+    const numMatch = s.match(/^(\d+)$/);
+    if (numMatch) {
+        return parseInt(numMatch[1], 10) * 60;
+    }
+
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -666,13 +705,16 @@ export function activate(context: vscode.ExtensionContext): void {
             const timeStr = tracker.format(tracker.getSeconds(currentProject)) || '< 1m';
 
             type MenuItem = vscode.QuickPickItem & { action: string };
+            const setTimeItem: MenuItem = { label: '$(edit) Set Time', description: `Manually set tracked time for ${projectName}`, action: 'setTime' };
             const items: MenuItem[] = timerStopped
                 ? [
                     { label: '$(play) Continue', description: `Resume timing for ${projectName}`, action: 'continue' },
+                    setTimeItem,
                     { label: '$(trash) Reset', description: `Clear all tracked time for ${projectName} (${timeStr})`, action: 'reset' },
                 ]
                 : [
                     { label: '$(debug-pause) Stop Timing', description: `Pause timer for ${projectName}`, action: 'stop' },
+                    setTimeItem,
                     { label: '$(trash) Reset', description: `Clear all tracked time for ${projectName} (${timeStr})`, action: 'reset' },
                 ];
 
@@ -688,6 +730,22 @@ export function activate(context: vscode.ExtensionContext): void {
             } else if (picked.action === 'continue') {
                 timerStopped = false;
                 lastActivityTime = Date.now();
+            } else if (picked.action === 'setTime') {
+                const input = await vscode.window.showInputBox({
+                    title: `Set Time — ${projectName}`,
+                    prompt: `Current: ${timeStr}. Enter new time (e.g. "2h 30m", "90m", "1h", "45", "1:30")`,
+                    placeHolder: '2h 30m',
+                    validateInput: (v) => parseTimeInput(v) === null
+                        ? 'Invalid format. Use e.g. "2h 30m", "90m", "1h", "45" (minutes), or "1:30" (h:mm).'
+                        : undefined,
+                });
+                if (input !== undefined) {
+                    const secs = parseTimeInput(input);
+                    if (secs !== null) {
+                        tracker.setSeconds(currentProject, secs);
+                        refreshTree();
+                    }
+                }
             } else if (picked.action === 'reset') {
                 const confirm = await vscode.window.showWarningMessage(
                     `Reset all tracked time for "${projectName}"?`,
