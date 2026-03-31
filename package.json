@@ -106,6 +106,16 @@
         "icon": "$(symbol-color)"
       },
       {
+        "command": "projectcycle.addFavorite",
+        "title": "Add to Favorites",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "projectcycle.removeFavorite",
+        "title": "Remove from Favorites",
+        "icon": "$(star-full)"
+      },
+      {
         "command": "projectcycle.activateProject",
         "title": "Open / Focus Project"
       },
@@ -159,18 +169,28 @@
         },
         {
           "command": "projectcycle.moveUpAll",
-          "when": "view == projectcycle.allView && viewItem == allItem",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
           "group": "inline@1"
         },
         {
           "command": "projectcycle.moveDownAll",
-          "when": "view == projectcycle.allView && viewItem == allItem",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
           "group": "inline@2"
         },
         {
           "command": "projectcycle.deleteProjectAll",
-          "when": "view == projectcycle.allView && viewItem == allItem",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
           "group": "inline@3"
+        },
+        {
+          "command": "projectcycle.addFavorite",
+          "when": "view == projectcycle.allView && viewItem == allItem",
+          "group": "inline@4"
+        },
+        {
+          "command": "projectcycle.removeFavorite",
+          "when": "view == projectcycle.allView && viewItem == allItemFavorite",
+          "group": "inline@4"
         },
         {
           "command": "projectcycle.assignColor",
@@ -179,7 +199,7 @@
         },
         {
           "command": "projectcycle.assignColor",
-          "when": "view == projectcycle.allView && viewItem == allItem",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
           "group": "1_actions@1"
         }
       ]

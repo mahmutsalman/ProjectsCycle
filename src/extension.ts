@@ -106,10 +106,11 @@ interface ProjectsData {
     priorityProjects: string[];
     allProjects: string[];
     projectColors: Record<string, string>;
+    favorites: string[];
 }
 
 class ProjectStore {
-    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {} };
+    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [] };
     private readonly filePath: string;
 
     constructor(storagePath: string) {
@@ -122,9 +123,9 @@ class ProjectStore {
         try {
             if (fs.existsSync(this.filePath)) {
                 const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, ...parsed };
+                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], ...parsed };
             }
-        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {} }; }
+        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [] }; }
     }
 
     save(): void {
@@ -177,6 +178,20 @@ class ProjectStore {
         this.data.projectColors = colors;
         this.save();
     }
+
+    getFavorites(): string[] { return [...(this.data.favorites ?? [])]; }
+
+    isFavorite(p: string): boolean { return (this.data.favorites ?? []).includes(p); }
+
+    toggleFavorite(p: string): void {
+        const favs = this.data.favorites ?? [];
+        const idx = favs.indexOf(p);
+        if (idx >= 0) { favs.splice(idx, 1); } else { favs.push(p); }
+        this.data.favorites = favs;
+        this.save();
+    }
+
+    reload(): void { this.load(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,8 +285,22 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
     getTreeItem(element: ProjectItem): vscode.TreeItem { return element; }
 
     getChildren(): ProjectItem[] {
-        const paths = this.store.getProjects(this.configKey);
+        let paths = this.store.getProjects(this.configKey);
         const colors = this.store.getColors();
+
+        if (this.configKey === 'allProjects') {
+            const favSet = new Set(this.store.getFavorites());
+            paths = [
+                ...paths.filter(p => favSet.has(p)),
+                ...paths.filter(p => !favSet.has(p)),
+            ];
+            return paths.map((p, i) => {
+                const timeStr = this.tracker.format(this.tracker.getSeconds(p));
+                const ctxVal = favSet.has(p) ? 'allItemFavorite' : 'allItem';
+                return new ProjectItem(p, i, ctxVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
+            });
+        }
+
         return paths.map((p, i) => {
             const timeStr = this.tracker.format(this.tracker.getSeconds(p));
             return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
@@ -386,6 +415,7 @@ export function activate(context: vscode.ExtensionContext): void {
             priorityProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshPriorityView', () => {
+            store.reload();
             tracker.reload();
             openWindowNames = queryOpenWindowNames();
             priorityProvider.refresh();
@@ -409,6 +439,7 @@ export function activate(context: vscode.ExtensionContext): void {
             allProvider.refresh();
         }),
         vscode.commands.registerCommand('projectcycle.refreshAllView', () => {
+            store.reload();
             tracker.reload();
             openWindowNames = queryOpenWindowNames();
             allProvider.refresh();
@@ -423,6 +454,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('projectcycle.deleteProjectAll', async (item: ProjectItem) => {
             await deleteFromList('allProjects', item.projectPath, 'all projects');
+            allProvider.refresh();
+        }),
+
+        vscode.commands.registerCommand('projectcycle.addFavorite', (item: ProjectItem) => {
+            store.toggleFavorite(item.projectPath);
+            allProvider.refresh();
+        }),
+        vscode.commands.registerCommand('projectcycle.removeFavorite', (item: ProjectItem) => {
+            store.toggleFavorite(item.projectPath);
             allProvider.refresh();
         }),
 
