@@ -276,6 +276,7 @@ class ProjectItem extends vscode.TreeItem {
 class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
     private _onDidChangeTreeData = new vscode.EventEmitter<void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+    private _cachedItems: ProjectItem[] = [];
 
     constructor(
         private readonly configKey: 'priorityProjects' | 'allProjects',
@@ -287,29 +288,36 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
 
     refresh(): void { this._onDidChangeTreeData.fire(); }
 
+    getCurrentItem(projectPath: string): ProjectItem | undefined {
+        return this._cachedItems.find(item => item.projectPath === projectPath);
+    }
+
     getTreeItem(element: ProjectItem): vscode.TreeItem { return element; }
 
     getChildren(): ProjectItem[] {
         let paths = this.store.getProjects(this.configKey);
         const colors = this.store.getColors();
 
+        let items: ProjectItem[];
         if (this.configKey === 'allProjects') {
             const favSet = new Set(this.store.getFavorites());
             paths = [
                 ...paths.filter(p => favSet.has(p)),
                 ...paths.filter(p => !favSet.has(p)),
             ];
-            return paths.map((p, i) => {
+            items = paths.map((p, i) => {
                 const timeStr = this.tracker.format(this.tracker.getSeconds(p));
                 const ctxVal = favSet.has(p) ? 'allItemFavorite' : 'allItem';
                 return new ProjectItem(p, i, ctxVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
             });
+        } else {
+            items = paths.map((p, i) => {
+                const timeStr = this.tracker.format(this.tracker.getSeconds(p));
+                return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
+            });
         }
-
-        return paths.map((p, i) => {
-            const timeStr = this.tracker.format(this.tracker.getSeconds(p));
-            return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
-        });
+        this._cachedItems = items;
+        return items;
     }
 }
 
@@ -423,13 +431,41 @@ export function activate(context: vscode.ExtensionContext): void {
         showCollapseAll: false,
     });
 
+    function revealCurrentProject(): void {
+        if (!currentProject) { return; }
+        setTimeout(() => {
+            try {
+                const pi = priorityProvider.getCurrentItem(currentProject!);
+                if (pi && priorityView.visible) { priorityView.reveal(pi, { select: true, focus: false }); }
+            } catch { /* view not ready */ }
+            try {
+                const ai = allProvider.getCurrentItem(currentProject!);
+                if (ai && allView.visible) { allView.reveal(ai, { select: true, focus: false }); }
+            } catch { /* view not ready */ }
+        }, 100);
+    }
+
+    // Re-reveal whenever the sidebar panel becomes visible
+    context.subscriptions.push(
+        priorityView.onDidChangeVisibility(e => { if (e.visible) { revealCurrentProject(); } }),
+        allView.onDidChangeVisibility(e => { if (e.visible) { revealCurrentProject(); } }),
+    );
+
+    // Patch refresh so the highlight is restored after every data update
+    const _origPriorityRefresh = priorityProvider.refresh.bind(priorityProvider);
+    priorityProvider.refresh = () => { _origPriorityRefresh(); revealCurrentProject(); };
+    const _origAllRefresh = allProvider.refresh.bind(allProvider);
+    allProvider.refresh = () => { _origAllRefresh(); revealCurrentProject(); };
+
     // Auto-register this window's workspace into allProjects on startup
     if (currentProject) {
         const allList = store.getProjects('allProjects');
         if (!allList.includes(currentProject)) {
             allList.push(currentProject);
             store.setProjects('allProjects', allList);
-            allProvider.refresh();
+            allProvider.refresh(); // patched — also calls revealCurrentProject()
+        } else {
+            revealCurrentProject();
         }
         // Apply this project's color to workbench on startup
         const startupColor = store.getColors()[currentProject];
@@ -842,9 +878,17 @@ export function activate(context: vscode.ExtensionContext): void {
         updateStatusBar();
     }, 60_000);
 
+    // Sync data from other windows whenever this window gains focus
     context.subscriptions.push(
         { dispose: () => clearInterval(terminalHeartbeat) },
         { dispose: () => clearInterval(timer) },
+        vscode.window.onDidChangeWindowState(e => {
+            if (!e.focused) { return; }
+            store.reload();
+            tracker.reload();
+            openWindowNames = queryOpenWindowNames();
+            refreshTree(); // patched — also calls revealCurrentProject()
+        }),
     );
 }
 
