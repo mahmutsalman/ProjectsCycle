@@ -120,6 +120,11 @@
         "title": "Open / Focus Project"
       },
       {
+        "command": "projectcycle.closeProjectWindow",
+        "title": "Close Window",
+        "icon": "$(close)"
+      },
+      {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
       },
@@ -153,53 +158,63 @@
       ],
       "view/item/context": [
         {
+          "command": "projectcycle.closeProjectWindow",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItemOpen",
+          "group": "inline@0"
+        },
+        {
+          "command": "projectcycle.closeProjectWindow",
+          "when": "view == projectcycle.allView && (viewItem == allItemOpen || viewItem == allItemFavoriteOpen)",
+          "group": "inline@0"
+        },
+        {
           "command": "projectcycle.moveUp",
-          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "when": "view == projectcycle.priorityView && (viewItem == priorityItem || viewItem == priorityItemOpen)",
           "group": "inline@1"
         },
         {
           "command": "projectcycle.moveDown",
-          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "when": "view == projectcycle.priorityView && (viewItem == priorityItem || viewItem == priorityItemOpen)",
           "group": "inline@2"
         },
         {
           "command": "projectcycle.deleteProject",
-          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "when": "view == projectcycle.priorityView && (viewItem == priorityItem || viewItem == priorityItemOpen)",
           "group": "inline@3"
         },
         {
           "command": "projectcycle.moveUpAll",
-          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen || viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "inline@1"
         },
         {
           "command": "projectcycle.moveDownAll",
-          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen || viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "inline@2"
         },
         {
           "command": "projectcycle.deleteProjectAll",
-          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen || viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "inline@3"
         },
         {
           "command": "projectcycle.addFavorite",
-          "when": "view == projectcycle.allView && viewItem == allItem",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen)",
           "group": "inline@4"
         },
         {
           "command": "projectcycle.removeFavorite",
-          "when": "view == projectcycle.allView && viewItem == allItemFavorite",
+          "when": "view == projectcycle.allView && (viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "inline@4"
         },
         {
           "command": "projectcycle.assignColor",
-          "when": "view == projectcycle.priorityView && viewItem == priorityItem",
+          "when": "view == projectcycle.priorityView && (viewItem == priorityItem || viewItem == priorityItemOpen)",
           "group": "1_actions@1"
         },
         {
           "command": "projectcycle.assignColor",
-          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemFavorite)",
+          "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen || viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "1_actions@1"
         }
       ]

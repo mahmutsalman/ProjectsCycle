@@ -261,7 +261,7 @@ class ProjectItem extends vscode.TreeItem {
         super(path.basename(projectPath), vscode.TreeItemCollapsibleState.None);
         this.description = timeStr ? `#${index + 1}  ${timeStr}` : `#${index + 1}`;
         this.tooltip = `${projectPath}\n${isOpen ? '● Open' : '○ Closed'}`;
-        this.contextValue = contextVal;
+        this.contextValue = isOpen ? contextVal + 'Open' : contextVal;
         this.iconPath = storagePath
             ? getColoredFolderIcon(color ?? null, isOpen, storagePath)
             : new vscode.ThemeIcon('folder');
@@ -568,6 +568,15 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
             focusWindow(path.basename(prev));
+        }),
+
+        vscode.commands.registerCommand('projectcycle.closeProjectWindow', (item: ProjectItem) => {
+            closeWindow(path.basename(item.projectPath));
+            setTimeout(() => {
+                openWindowNames = queryOpenWindowNames();
+                priorityProvider.refresh();
+                allProvider.refresh();
+            }, 600);
         }),
 
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
@@ -945,6 +954,25 @@ function focusWindow(folderName: string): boolean {
     } catch {
         return false;
     }
+}
+
+function closeWindow(folderName: string): void {
+    const safe = folderName.replace(/"/g, '\\"');
+    const script = [
+        'tell application "System Events"',
+        '    tell process "Code"',
+        `        repeat with w in (every window)`,
+        `            if name of w contains "${safe}" then`,
+        '                perform action "AXPress" of button 1 of w',
+        '                exit repeat',
+        '            end if',
+        '        end repeat',
+        '    end tell',
+        'end tell',
+    ].join('\n');
+    try {
+        execSync(`osascript -e '${script}'`, { timeout: 5000 });
+    } catch {}
 }
 
 function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: string, noneOpenMsg: string): void {
