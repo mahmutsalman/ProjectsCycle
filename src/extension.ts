@@ -1031,6 +1031,14 @@ function darkenHex(hex: string, amount: number): string {
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
+function lightenHex(hex: string, amount: number): string {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const r = Math.min(255, Math.round(((n >> 16) & 0xff) + (255 - ((n >> 16) & 0xff)) * amount));
+    const g = Math.min(255, Math.round(((n >> 8)  & 0xff) + (255 - ((n >> 8)  & 0xff)) * amount));
+    const b = Math.min(255, Math.round((n & 0xff)          + (255 - (n & 0xff))          * amount));
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
 function getContrastColor(hex: string): string {
     const n = parseInt(hex.replace('#', ''), 16);
     const lum = (0.299 * ((n >> 16) & 0xff) + 0.587 * ((n >> 8) & 0xff) + 0.114 * (n & 0xff)) / 255;
@@ -1074,23 +1082,30 @@ function getColoredFolderIcon(color: string | null, isOpen: boolean, storagePath
 }
 
 async function applyProjectColor(hex: string): Promise<void> {
-    const fg   = getContrastColor(hex);
-    const dark = darkenHex(hex, 0.2);
-    const cfg  = vscode.workspace.getConfiguration();
-    const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
+    // Water flooding from bottom to top: deepest at status bar, lightest at title bar
+    const deep    = darkenHex(hex, 0.15);    // status bar — deepest water
+    const mid     = hex;                     // activity bar — mid water level
+    const surface = lightenHex(hex, 0.38);   // title bar — surface, barely flooded
+
+    const fgDeep    = getContrastColor(deep);
+    const fgMid     = getContrastColor(mid);
+    const fgSurface = getContrastColor(surface);
+
+    const cfg = vscode.workspace.getConfiguration();
+    const cur = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
     await cfg.update('workbench.colorCustomizations', {
         ...cur,
-        'titleBar.activeBackground':           hex,
-        'titleBar.activeForeground':           fg,
-        'titleBar.inactiveBackground':         dark,
-        'titleBar.inactiveForeground':         fg + 'aa',
-        'activityBar.background':              hex,
-        'activityBar.activeBackground':        hex,
-        'activityBar.activeBorder':            fg + '00',
-        'activityBar.foreground':              fg,
-        'activityBar.inactiveForeground':      fg + '88',
-        'statusBar.background':                hex,
-        'statusBar.foreground':                fg,
+        'titleBar.activeBackground':      surface,
+        'titleBar.activeForeground':      fgSurface,
+        'titleBar.inactiveBackground':    darkenHex(surface, 0.12),
+        'titleBar.inactiveForeground':    fgSurface + 'aa',
+        'activityBar.background':         mid,
+        'activityBar.activeBackground':   mid,
+        'activityBar.activeBorder':       fgMid + '00',
+        'activityBar.foreground':         fgMid,
+        'activityBar.inactiveForeground': fgMid + '88',
+        'statusBar.background':           deep,
+        'statusBar.foreground':           fgDeep,
     }, vscode.ConfigurationTarget.Workspace);
 }
 
