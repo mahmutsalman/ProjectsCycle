@@ -107,11 +107,16 @@ class TimeTracker {
 // Project Store  (replaces VS Code settings for project lists & colors)
 // ---------------------------------------------------------------------------
 
+type ColorMode = 'standard' | 'depth' | 'hue-drift' | 'warmth' | 'saturation';
+
 interface ProjectsData {
     priorityProjects: string[];
     allProjects: string[];
     projectColors: Record<string, string>;
     favorites: string[];
+    colorMode?: ColorMode;
+    colorPhase?: number;
+    colorLastTick?: number;
 }
 
 class ProjectStore {
@@ -193,6 +198,19 @@ class ProjectStore {
         const idx = favs.indexOf(p);
         if (idx >= 0) { favs.splice(idx, 1); } else { favs.push(p); }
         this.data.favorites = favs;
+        this.save();
+    }
+
+    getColorMode(): ColorMode { return this.data.colorMode ?? 'standard'; }
+    setColorMode(mode: ColorMode): void { this.data.colorMode = mode; this.save(); }
+    getColorPhase(): number { return this.data.colorPhase ?? 0; }
+    getColorLastTick(): number { return this.data.colorLastTick ?? 0; }
+    saveColorPhase(phase: number, tickTime: number): void {
+        // Reload from disk first so we never clobber project/color changes
+        // made by other open VS Code windows between ticks.
+        this.load();
+        this.data.colorPhase = phase;
+        this.data.colorLastTick = tickTime;
         this.save();
     }
 
@@ -417,6 +435,22 @@ export function activate(context: vscode.ExtensionContext): void {
     navHist = new SharedNavHistory(storagePath);
     const currentProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
+    const COLOR_MODES: ColorMode[] = ['standard', 'depth', 'hue-drift', 'warmth', 'saturation'];
+    const MODE_LABELS: Record<ColorMode, string> = {
+        'standard':   'Standard',
+        'depth':      'Depth Breathing',
+        'hue-drift':  'Hue Drift',
+        'warmth':     'Warmth Cycle',
+        'saturation': 'Saturation Pulse',
+    };
+
+    // Restore and advance phase for time elapsed since last session
+    let colorPhase = store.getColorPhase();
+    const savedTick = store.getColorLastTick();
+    if (savedTick > 0) {
+        colorPhase = (colorPhase + (Date.now() - savedTick) / (5 * 60_000)) % 1;
+    }
+
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
     const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker, store);
 
@@ -470,7 +504,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // Apply this project's color to workbench on startup
         const startupColor = store.getColors()[currentProject];
         if (startupColor) {
-            applyProjectColor(startupColor);
+            applyAnimatedProjectColor(startupColor, store.getColorMode(), colorPhase);
         } else {
             removeProjectColor();
         }
@@ -577,6 +611,17 @@ export function activate(context: vscode.ExtensionContext): void {
                 priorityProvider.refresh();
                 allProvider.refresh();
             }, 600);
+        }),
+
+        vscode.commands.registerCommand('projectcycle.cycleColorMode', async () => {
+            const current = store.getColorMode();
+            const next = COLOR_MODES[(COLOR_MODES.indexOf(current) + 1) % COLOR_MODES.length];
+            store.setColorMode(next);
+            if (currentProject) {
+                const color = store.getColors()[currentProject];
+                if (color) { await applyAnimatedProjectColor(color, next, colorPhase); }
+            }
+            vscode.window.showInformationMessage(`Color Mode: ${MODE_LABELS[next]}`);
         }),
 
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
@@ -689,7 +734,7 @@ export function activate(context: vscode.ExtensionContext): void {
             store.setColors(colors);
             priorityProvider.refresh();
             allProvider.refresh();
-            if (isActiveProject) { await applyProjectColor(finalHex); }
+            if (isActiveProject) { await applyAnimatedProjectColor(finalHex, store.getColorMode(), colorPhase); }
         }),
     );
 
@@ -763,6 +808,11 @@ export function activate(context: vscode.ExtensionContext): void {
                     { label: '$(trash) Reset', description: `Clear all tracked time for ${projectName} (${timeStr})`, action: 'reset' },
                 ];
 
+            items.push(
+                { label: '', kind: vscode.QuickPickItemKind.Separator } as MenuItem,
+                { label: `$(symbol-event) Color Mode: ${MODE_LABELS[store.getColorMode()]}`, description: 'Click to cycle to next mode', action: 'cycleColor' },
+            );
+
             const picked = await vscode.window.showQuickPick(items, {
                 title: `ProjectCycle Timer — ${projectName}  ${timeStr}`,
                 placeHolder: 'Choose an action',
@@ -775,6 +825,13 @@ export function activate(context: vscode.ExtensionContext): void {
             } else if (picked.action === 'continue') {
                 timerStopped = false;
                 lastActivityTime = Date.now();
+            } else if (picked.action === 'cycleColor') {
+                const current = store.getColorMode();
+                const next = COLOR_MODES[(COLOR_MODES.indexOf(current) + 1) % COLOR_MODES.length];
+                store.setColorMode(next);
+                const color = store.getColors()[currentProject];
+                if (color) { await applyAnimatedProjectColor(color, next, colorPhase); }
+                vscode.window.showInformationMessage(`Color Mode: ${MODE_LABELS[next]}`);
             } else if (picked.action === 'setTime') {
                 const input = await vscode.window.showInputBox({
                     title: `Set Time — ${projectName}`,
@@ -887,10 +944,24 @@ export function activate(context: vscode.ExtensionContext): void {
         updateStatusBar();
     }, 60_000);
 
+    // Color animation tick — advances phase every 30s and repaints when not in Standard mode
+    const COLOR_TICK_MS  = 30_000;
+    const COLOR_CYCLE_MS = 5 * 60_000;
+    const colorTick = setInterval(async () => {
+        const mode = store.getColorMode();
+        if (!currentProject || mode === 'standard') { return; }
+        const color = store.getColors()[currentProject];
+        if (!color) { return; }
+        colorPhase = (colorPhase + COLOR_TICK_MS / COLOR_CYCLE_MS) % 1;
+        store.saveColorPhase(colorPhase, Date.now());
+        await applyAnimatedProjectColor(color, mode, colorPhase);
+    }, COLOR_TICK_MS);
+
     // Sync data from other windows whenever this window gains focus
     context.subscriptions.push(
         { dispose: () => clearInterval(terminalHeartbeat) },
         { dispose: () => clearInterval(timer) },
+        { dispose: () => clearInterval(colorTick) },
         vscode.window.onDidChangeWindowState(e => {
             if (!e.focused) { return; }
             store.reload();
@@ -1109,11 +1180,78 @@ function getColoredFolderIcon(color: string | null, isOpen: boolean, storagePath
     return vscode.Uri.file(iconPath);
 }
 
-async function applyProjectColor(hex: string): Promise<void> {
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const r = ((n >> 16) & 0xff) / 255, g = ((n >> 8) & 0xff) / 255, b = (n & 0xff) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    const l = (max + min) / 2;
+    if (d === 0) { return { h: 0, s: 0, l }; }
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h: number;
+    switch (max) {
+        case r:  h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g:  h = ((b - r) / d + 2) / 6; break;
+        default: h = ((r - g) / d + 4) / 6;
+    }
+    return { h: h * 360, s, l };
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+    h = ((h % 360) + 360) % 360 / 360;
+    s = Math.max(0, Math.min(1, s));
+    l = Math.max(0, Math.min(1, l));
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const f = (t: number) => {
+        t = ((t % 1) + 1) % 1;
+        if (t < 1/6) { return p + (q - p) * 6 * t; }
+        if (t < 1/2) { return q; }
+        if (t < 2/3) { return p + (q - p) * (2/3 - t) * 6; }
+        return p;
+    };
+    const r = Math.round(f(h + 1/3) * 255), g = Math.round(f(h) * 255), b = Math.round(f(h - 1/3) * 255);
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+}
+
+function blendHex(hex1: string, hex2: string, t: number): string {
+    const n1 = parseInt(hex1.replace('#', ''), 16), n2 = parseInt(hex2.replace('#', ''), 16);
+    const r = Math.round(((n1 >> 16) & 0xff) * (1-t) + ((n2 >> 16) & 0xff) * t);
+    const g = Math.round(((n1 >> 8)  & 0xff) * (1-t) + ((n2 >> 8)  & 0xff) * t);
+    const b = Math.round((n1 & 0xff)          * (1-t) + (n2 & 0xff)          * t);
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+}
+
+async function applyAnimatedProjectColor(baseHex: string, mode: ColorMode, phase: number): Promise<void> {
+    if (mode === 'standard') { return applyProjectColor(baseHex); }
+    const sin = Math.sin(phase * 2 * Math.PI);
+    const t = (1 + sin) / 2;  // 0→1 oscillation
+
+    if (mode === 'hue-drift') {
+        const { h, s, l } = hexToHsl(baseHex);
+        return applyProjectColor(hslToHex(h + 30 * sin, s, l));
+    }
+    if (mode === 'warmth') {
+        const hex = sin > 0
+            ? blendHex(baseHex, '#ff8c00', sin * 0.25)
+            : blendHex(baseHex, '#0088ff', -sin * 0.25);
+        return applyProjectColor(hex);
+    }
+    if (mode === 'saturation') {
+        const { h, s, l } = hexToHsl(baseHex);
+        return applyProjectColor(hslToHex(h, s * (0.35 + 0.65 * t), l));
+    }
+    // depth breathing — varies water levels around the standard midpoint (t=0.5)
+    const titleLighten = 0.65 - 0.55 * t;                                     // 0.65 → 0.10
+    const actHex       = blendHex(lightenHex(baseHex, 0.20), darkenHex(baseHex, 0.10), t);
+    const statusDarken = 0.30 * t;                                             // 0 → 0.30
+    return applyProjectColor(baseHex, titleLighten, actHex, statusDarken);
+}
+
+async function applyProjectColor(hex: string, titleLightenAmt = 0.38, actHex?: string, statusDarkenAmt = 0.15): Promise<void> {
     // Water flooding from bottom to top: deepest at status bar, lightest at title bar
-    const deep    = darkenHex(hex, 0.15);    // status bar — deepest water
-    const mid     = hex;                     // activity bar — mid water level
-    const surface = lightenHex(hex, 0.38);   // title bar — surface, barely flooded
+    const deep    = darkenHex(hex, statusDarkenAmt);  // status bar — deepest water
+    const mid     = actHex ?? hex;                    // activity bar — mid water level
+    const surface = lightenHex(hex, titleLightenAmt); // title bar — surface, barely flooded
 
     const fgDeep    = getContrastColor(deep);
     const fgMid     = getContrastColor(mid);

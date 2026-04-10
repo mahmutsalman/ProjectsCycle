@@ -125,6 +125,11 @@
         "icon": "$(close)"
       },
       {
+        "command": "projectcycle.cycleColorMode",
+        "title": "Cycle Color Mode",
+        "icon": "$(symbol-event)"
+      },
+      {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
       },
@@ -144,6 +149,11 @@
           "command": "projectcycle.refreshPriorityView",
           "when": "view == projectcycle.priorityView",
           "group": "navigation@2"
+        },
+        {
+          "command": "projectcycle.cycleColorMode",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@3"
         },
         {
           "command": "projectcycle.addCurrentToAll",
