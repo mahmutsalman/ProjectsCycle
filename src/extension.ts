@@ -461,6 +461,9 @@ export function activate(context: vscode.ExtensionContext): void {
     let activeColorMode: ColorMode = validModes.includes(savedWindowMode as ColorMode)
         ? savedWindowMode as ColorMode : 'standard';
 
+    // Freeze toggle — pauses animation at the current color state
+    let colorFrozen = context.workspaceState.get<boolean>('colorFrozen', false);
+
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
     const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker, store);
 
@@ -632,6 +635,23 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (color) { await applyAnimatedProjectColor(color, next, colorPhase); }
             }
             vscode.window.showInformationMessage(`Color Mode: ${MODE_LABELS[next]}`);
+        }),
+
+        vscode.commands.registerCommand('projectcycle.toggleColorFreeze', async () => {
+            colorFrozen = !colorFrozen;
+            context.workspaceState.update('colorFrozen', colorFrozen);
+            vscode.window.showInformationMessage(colorFrozen
+                ? '$(pin) Color animation frozen — current state locked'
+                : '$(pin) Color animation resumed');
+        }),
+
+        vscode.commands.registerCommand('projectcycle.tickColor', async () => {
+            if (!currentProject || activeColorMode === 'standard') { return; }
+            const color = store.getColors()[currentProject];
+            if (!color) { return; }
+            colorPhase = (colorPhase + COLOR_TICK_MS / COLOR_CYCLE_MS) % 1;
+            store.saveColorPhase(colorPhase, Date.now());
+            await applyAnimatedProjectColor(color, activeColorMode, colorPhase);
         }),
 
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
@@ -959,7 +979,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const COLOR_CYCLE_MS = 5 * 60_000;  // full cycle = 5 minutes
 
     const colorTick = setInterval(() => {
-        if (!currentProject || activeColorMode === 'standard') { return; }
+        if (!currentProject || activeColorMode === 'standard' || colorFrozen) { return; }
         const color = store.getColors()[currentProject];
         if (!color) { return; }
         colorPhase = (colorPhase + COLOR_TICK_MS / COLOR_CYCLE_MS) % 1;
@@ -1337,10 +1357,15 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'tab.activeBackground':               deep(0.68),   // active tab — most visible
         'tab.inactiveBackground':             deep(0.86),   // inactive tabs — nearly black
         'tab.hoverBackground':                deep(0.76),   // tab hover
-        'tab.activeBorder':                   titleHex,     // full-color accent line under active tab
+        'tab.activeBorder':                   titleHex,     // accent line under active tab
+        'tab.activeBorderTop':                titleHex,     // bright accent line on TOP of active tab
         'panel.background':                   deep(0.82),   // terminal / problems panel
         'panelTitle.activeBorder':            actHex,       // colored underline on active panel tab
         'terminal.background':                deep(0.84),   // terminal interior
+        // ── Scrollbar ────────────────────────────────────────────────────────
+        'scrollbarSlider.background':         titleHex + '40',  // scrollbar thumb — semi-transparent accent
+        'scrollbarSlider.hoverBackground':    titleHex + '70',  // brighter on hover
+        'scrollbarSlider.activeBackground':   titleHex + 'aa',  // full accent when dragging
         // ── Command Palette / Quick Pick dropdown ────────────────────────────
         'quickInput.background':              deep(0.80),   // main dropdown bg
         'quickInputTitle.background':         deep(0.72),   // title bar inside quick pick
@@ -1351,10 +1376,21 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'notifications.border':               deep(0.60),   // divider between toasts
         'notificationToast.border':           titleHex,     // outer border — accent color
         'notificationCenterHeader.background': deep(0.72),  // notification center header
+        // ── Sticky scroll (pinned class/method headers while scrolling) ──────
+        'editorStickyScroll.background':      deep(0.82),   // sticky header bg — slightly lighter than editor
+        'editorStickyScrollHover.background': deep(0.75),   // hover state
+        'editorStickyScrollBorder.shadow':    titleHex,     // separator line under sticky headers
+        // ── Breadcrumb bar (src > file > Class > method) ─────────────────────
+        'breadcrumb.background':              deep(0.85),   // breadcrumb strip bg
         // ── Editor area ──────────────────────────────────────────────────────
-        'editor.background':                  deep(0.90),   // code area — very dark tint, text stays readable
+        'editor.background':                  deep(0.90),   // code area — very dark tint
         // ── Editor gutter (line-number column) ───────────────────────────────
-        'editorGutter.background':            deep(0.88),   // gutter bg — slightly lighter than editor
+        'editorGutter.background':            deep(0.88),   // gutter bg
+        // ── Corner gaps & borders ─────────────────────────────────────────────
+        'activityBar.border':                 deep(0.70),   // border between activity bar and sidebar
+        'sideBar.border':                     deep(0.70),   // sidebar right border
+        'activityBarBadge.background':        titleHex,     // badge (notification dot) — accent color
+        'activityBarBadge.foreground':        fgTitle,      // badge text
     }, vscode.ConfigurationTarget.Workspace);
 }
 
@@ -1371,13 +1407,18 @@ async function removeProjectColor(): Promise<void> {
         'sideBar.background', 'sideBarSectionHeader.background', 'sideBarSectionHeader.border',
         'editor.background',
         'editorGroupHeader.tabsBackground', 'tab.activeBackground', 'tab.inactiveBackground',
-        'tab.hoverBackground', 'tab.activeBorder',
+        'tab.hoverBackground', 'tab.activeBorder', 'tab.activeBorderTop',
         'panel.background', 'panelTitle.activeBorder', 'terminal.background',
         'editorGutter.background',
+        'scrollbarSlider.background', 'scrollbarSlider.hoverBackground', 'scrollbarSlider.activeBackground',
         'notifications.background', 'notifications.border', 'notificationToast.border',
         'notificationCenterHeader.background',
         'quickInput.background', 'quickInputTitle.background',
         'quickInputList.focusBackground', 'pickerGroup.border',
+        'activityBar.border', 'sideBar.border',
+        'activityBarBadge.background', 'activityBarBadge.foreground',
+        'editorStickyScroll.background', 'editorStickyScrollHover.background', 'editorStickyScrollBorder.shadow',
+        'breadcrumb.background',
     ];
     const cfg  = vscode.workspace.getConfiguration();
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};

@@ -130,6 +130,16 @@
         "icon": "$(symbol-event)"
       },
       {
+        "command": "projectcycle.toggleColorFreeze",
+        "title": "Freeze / Unfreeze Color Animation",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "projectcycle.tickColor",
+        "title": "Step to Next Color State",
+        "icon": "$(debug-step-over)"
+      },
+      {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
       },
@@ -154,6 +164,16 @@
           "command": "projectcycle.cycleColorMode",
           "when": "view == projectcycle.priorityView",
           "group": "navigation@3"
+        },
+        {
+          "command": "projectcycle.toggleColorFreeze",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "projectcycle.tickColor",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@5"
         },
         {
           "command": "projectcycle.addCurrentToAll",
