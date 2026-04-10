@@ -1553,7 +1553,9 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'activityBarBadge.foreground':        fgTitle,      // badge text
     }, vscode.ConfigurationTarget.Workspace);
 
-    await applySyntaxTheme(baseHex);
+    // Drive syntax palette from the animated title color, not the static base —
+    // so each tick/mode state gets its own unique syntax color set.
+    await applySyntaxTheme(titleHex);
 }
 
 async function removeProjectColor(): Promise<void> {
