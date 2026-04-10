@@ -454,6 +454,12 @@ export function activate(context: vscode.ExtensionContext): void {
     if (savedTick > 0) {
         colorPhase = (colorPhase + (Date.now() - savedTick) / (5 * 60_000)) % 1;
     }
+    // Per-window color mode stored in workspaceState — each window has its own mode
+    // independently of other open windows. Falls back to 'standard' if not set.
+    const validModes: ColorMode[] = ['standard', 'pulse', 'aurora', 'neon', 'ember'];
+    const savedWindowMode = context.workspaceState.get<string>('colorMode', 'standard');
+    let activeColorMode: ColorMode = validModes.includes(savedWindowMode as ColorMode)
+        ? savedWindowMode as ColorMode : 'standard';
 
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
     const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker, store);
@@ -618,9 +624,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
 
         vscode.commands.registerCommand('projectcycle.cycleColorMode', async () => {
-            const current = store.getColorMode();
-            const next = COLOR_MODES[(COLOR_MODES.indexOf(current) + 1) % COLOR_MODES.length];
-            store.setColorMode(next);
+            const next = COLOR_MODES[(COLOR_MODES.indexOf(activeColorMode) + 1) % COLOR_MODES.length];
+            activeColorMode = next;
+            context.workspaceState.update('colorMode', next);
             if (currentProject) {
                 const color = store.getColors()[currentProject];
                 if (color) { await applyAnimatedProjectColor(color, next, colorPhase); }
@@ -814,7 +820,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
             items.push(
                 { label: '', kind: vscode.QuickPickItemKind.Separator } as MenuItem,
-                { label: `$(symbol-event) Color Mode: ${MODE_LABELS[store.getColorMode()]}`, description: 'Click to cycle to next mode', action: 'cycleColor' },
+                { label: `$(symbol-event) Color Mode: ${MODE_LABELS[activeColorMode]}`, description: 'Click to cycle to next mode', action: 'cycleColor' },
             );
 
             const picked = await vscode.window.showQuickPick(items, {
@@ -830,9 +836,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 timerStopped = false;
                 lastActivityTime = Date.now();
             } else if (picked.action === 'cycleColor') {
-                const current = store.getColorMode();
-                const next = COLOR_MODES[(COLOR_MODES.indexOf(current) + 1) % COLOR_MODES.length];
-                store.setColorMode(next);
+                const next = COLOR_MODES[(COLOR_MODES.indexOf(activeColorMode) + 1) % COLOR_MODES.length];
+                activeColorMode = next;
+                context.workspaceState.update('colorMode', next);
                 const color = store.getColors()[currentProject];
                 if (color) { await applyAnimatedProjectColor(color, next, colorPhase); }
                 vscode.window.showInformationMessage(`Color Mode: ${MODE_LABELS[next]}`);
@@ -948,17 +954,17 @@ export function activate(context: vscode.ExtensionContext): void {
         updateStatusBar();
     }, 60_000);
 
-    // Color animation tick — advances phase every 30s and repaints when not in Standard mode
+    // Color animation tick — advances phase and repaints when not in Standard mode
     const COLOR_TICK_MS  = 30_000;
-    const COLOR_CYCLE_MS = 5 * 60_000;
-    const colorTick = setInterval(async () => {
-        const mode = store.getColorMode();
-        if (!currentProject || mode === 'standard') { return; }
+    const COLOR_CYCLE_MS = 5 * 60_000;  // full cycle = 5 minutes
+
+    const colorTick = setInterval(() => {
+        if (!currentProject || activeColorMode === 'standard') { return; }
         const color = store.getColors()[currentProject];
         if (!color) { return; }
         colorPhase = (colorPhase + COLOR_TICK_MS / COLOR_CYCLE_MS) % 1;
         store.saveColorPhase(colorPhase, Date.now());
-        await applyAnimatedProjectColor(color, mode, colorPhase);
+        applyAnimatedProjectColor(color, activeColorMode, colorPhase).catch(() => {});
     }, COLOR_TICK_MS);
 
     // Sync data from other windows whenever this window gains focus
@@ -1231,79 +1237,81 @@ async function applyAnimatedProjectColor(baseHex: string, mode: ColorMode, phase
     const { h, s, l } = hexToHsl(baseHex);
 
     switch (mode) {
+        // Pulse — dramatic brightness swing dark→bright→dark
         case 'pulse': {
-            // Title bar breathes in/out; activity anchors steady; status stays deep
-            const breatheL = Math.max(0.15, Math.min(0.92, l + 0.24 + 0.16 * sin));
-            return applyProjectColor(
-                hslToHex(h, s * 0.88, breatheL),               // title — breathes
-                hslToHex(h, s, l),                              // activity — steady
-                hslToHex(h, Math.min(1, s * 1.1), Math.max(0.06, l - 0.24)), // status — anchored
+            const titleL  = 0.15 + 0.70 * t;          // swings 0.15 → 0.85
+            const statusL = 0.05 + 0.50 * t;          // swings 0.05 → 0.55
+            return applyProjectColor(baseHex,
+                hslToHex(h, s, titleL),
+                hslToHex(h, s, l),
+                hslToHex(h, s, statusL),
             );
         }
 
+        // Aurora — big hue sweep ±60° so you clearly see it shift
         case 'aurora': {
-            // Three zones float at staggered hue offsets, all slowly rotating together.
-            // Title is warmer, activity is base, status is cooler — like a northern lights column.
-            const drift  = phase * 72;   // 72° rotation per full phase cycle
-            const spread = 28;
-            const borderL = Math.min(0.82, l + 0.42 + 0.08 * t);
-            return applyProjectColor(
-                hslToHex(h + drift + spread,  Math.min(1, s * 0.82), Math.min(0.88, l + 0.30)),
-                hslToHex(h + drift,            s,                     l),
-                hslToHex(h + drift - spread,   Math.min(1, s * 0.88), Math.max(0.07, l - 0.26)),
-                hslToHex(h + drift + spread * 1.6, Math.min(1, s), borderL), // cmd border — aurora shimmer
+            const hDrift  = 60 * sin;                  // hue ±60°
+            const borderL = 0.50 + 0.40 * t;
+            return applyProjectColor(baseHex,
+                hslToHex(h + hDrift,       s,  Math.min(0.85, l + 0.30)),
+                hslToHex(h + hDrift * 0.5, s,  l),
+                hslToHex(h - hDrift,       s,  Math.max(0.05, l - 0.20)),
+                hslToHex(h + hDrift,       1,  borderL),
             );
         }
 
+        // Neon — saturation swings 0→1 so color goes grey→vivid
         case 'neon': {
-            // Max saturation chrome. Command center glows with a pulsing border.
-            const boostS    = Math.min(1, s + 0.38 + 0.07 * sin);
-            const borderL   = Math.min(0.88, l + 0.48 + 0.10 * t);
-            return applyProjectColor(
-                hslToHex(h, boostS, Math.min(0.80, l + 0.24)),    // title — vibrant light
-                hslToHex(h, boostS, l),                             // activity — full neon
-                hslToHex(h, boostS, Math.max(0.09, l - 0.20)),     // status — deep neon
-                hslToHex(h, 1, borderL),                            // cmd border — glowing ring
+            const sPulse  = t;                          // saturation 0 → 1
+            const lGlow   = 0.20 + 0.60 * t;
+            return applyProjectColor(baseHex,
+                hslToHex(h, sPulse, lGlow),
+                hslToHex(h, sPulse, l),
+                hslToHex(h, sPulse, Math.max(0.05, l - 0.15)),
+                hslToHex(h, 1,      0.30 + 0.60 * t),
             );
         }
 
+        // Ember — hue swings ±40° warm↔cool so it's obviously visible
         case 'ember': {
-            // Left edge (activity) glows hot like embers; top cools; bottom chars deep.
-            // The flicker shifts the warm push slightly on each tick.
-            const flicker  = 14 + 9 * t;                          // 14°–23° warm hue push
-            const warmH    = h + flicker;
-            return applyProjectColor(
-                hslToHex(warmH + 10, s * 0.78, Math.min(0.84, l + 0.28)),     // title — cool surface
-                hslToHex(warmH,      Math.min(1, s * 1.30), l + 0.05 * sin),  // activity — ember glow
-                hslToHex(h - 10,     Math.min(1, s * 1.12), Math.max(0.05, l - 0.30)), // status — charcoal
+            const hSwing  = 40 * sin;                  // warm ↔ cool ±40°
+            const lFlick  = 0.10 + 0.70 * t;
+            return applyProjectColor(baseHex,
+                hslToHex(h + hSwing,       s,                          lFlick),
+                hslToHex(h + hSwing * 0.5, Math.min(1, s + 0.30 * t), l),
+                hslToHex(h - hSwing,       s,                          Math.max(0.05, l - 0.20)),
             );
         }
 
         default: {
-            // 'standard' + any legacy stored mode value → static water flood
-            return applyProjectColor(
-                lightenHex(baseHex, 0.38),  // title — surface
-                baseHex,                     // activity — mid
-                darkenHex(baseHex, 0.15),   // status — deep
+            return applyProjectColor(baseHex,
+                lightenHex(baseHex, 0.38),
+                baseHex,
+                darkenHex(baseHex, 0.15),
             );
         }
     }
 }
 
-async function applyProjectColor(titleHex: string, actHex: string, statusHex: string, cmdBorderHex?: string): Promise<void> {
+async function applyProjectColor(baseHex: string, titleHex: string, actHex: string, statusHex: string, cmdBorderHex?: string): Promise<void> {
     const fgTitle  = getContrastColor(titleHex);
     const fgAct    = getContrastColor(actHex);
     const fgStatus = getContrastColor(statusHex);
 
-    // Command center pill: tinted darker than title bar so it reads as a pill-in-bar
     const cmdBg     = darkenHex(titleHex, 0.24);
     const cmdFg     = getContrastColor(cmdBg);
-    const cmdBorder = cmdBorderHex ?? (titleHex + '55');  // translucent title bar hue
+    const cmdBorder = cmdBorderHex ?? (titleHex + '55');
+
+    // Deep-dark panel backgrounds: darken the base color heavily so it becomes a
+    // near-black tinted solid. e.g. purple #7c3aff → sidebar #130926 (dark purple).
+    // Solid colors, not alpha fog — background is clearly colored, text stays readable.
+    const deep = (amt: number): string => darkenHex(baseHex, amt);
 
     const cfg = vscode.workspace.getConfiguration();
     const cur = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
     await cfg.update('workbench.colorCustomizations', {
         ...cur,
+        // ── Chrome edges (animated per mode) ──────────────────────────────────
         'titleBar.activeBackground':          titleHex,
         'titleBar.activeForeground':          fgTitle,
         'titleBar.inactiveBackground':        darkenHex(titleHex, 0.12),
@@ -1321,6 +1329,32 @@ async function applyProjectColor(titleHex: string, actHex: string, statusHex: st
         'activityBar.inactiveForeground':     fgAct + '88',
         'statusBar.background':               statusHex,
         'statusBar.foreground':               fgStatus,
+        // ── Panel backgrounds (solid deep-dark tint — not alpha fog) ──────────
+        'sideBar.background':                 deep(0.84),   // sidebar list
+        'sideBarSectionHeader.background':    deep(0.78),   // section headers — slightly lighter
+        'sideBarSectionHeader.border':        deep(0.72),   // divider line between sections
+        'editorGroupHeader.tabsBackground':   deep(0.80),   // tab bar strip
+        'tab.activeBackground':               deep(0.68),   // active tab — most visible
+        'tab.inactiveBackground':             deep(0.86),   // inactive tabs — nearly black
+        'tab.hoverBackground':                deep(0.76),   // tab hover
+        'tab.activeBorder':                   titleHex,     // full-color accent line under active tab
+        'panel.background':                   deep(0.82),   // terminal / problems panel
+        'panelTitle.activeBorder':            actHex,       // colored underline on active panel tab
+        'terminal.background':                deep(0.84),   // terminal interior
+        // ── Command Palette / Quick Pick dropdown ────────────────────────────
+        'quickInput.background':              deep(0.80),   // main dropdown bg
+        'quickInputTitle.background':         deep(0.72),   // title bar inside quick pick
+        'quickInputList.focusBackground':     deep(0.60),   // highlighted item
+        'pickerGroup.border':                 deep(0.55),   // divider between groups
+        // ── Notification toasts ──────────────────────────────────────────────
+        'notifications.background':           deep(0.78),   // toast card bg
+        'notifications.border':               deep(0.60),   // divider between toasts
+        'notificationToast.border':           titleHex,     // outer border — accent color
+        'notificationCenterHeader.background': deep(0.72),  // notification center header
+        // ── Editor area ──────────────────────────────────────────────────────
+        'editor.background':                  deep(0.90),   // code area — very dark tint, text stays readable
+        // ── Editor gutter (line-number column) ───────────────────────────────
+        'editorGutter.background':            deep(0.88),   // gutter bg — slightly lighter than editor
     }, vscode.ConfigurationTarget.Workspace);
 }
 
@@ -1334,6 +1368,16 @@ async function removeProjectColor(): Promise<void> {
         'activityBar.background', 'activityBar.activeBackground', 'activityBar.activeBorder',
         'activityBar.foreground', 'activityBar.inactiveForeground',
         'statusBar.background', 'statusBar.foreground',
+        'sideBar.background', 'sideBarSectionHeader.background', 'sideBarSectionHeader.border',
+        'editor.background',
+        'editorGroupHeader.tabsBackground', 'tab.activeBackground', 'tab.inactiveBackground',
+        'tab.hoverBackground', 'tab.activeBorder',
+        'panel.background', 'panelTitle.activeBorder', 'terminal.background',
+        'editorGutter.background',
+        'notifications.background', 'notifications.border', 'notificationToast.border',
+        'notificationCenterHeader.background',
+        'quickInput.background', 'quickInputTitle.background',
+        'quickInputList.focusBackground', 'pickerGroup.border',
     ];
     const cfg  = vscode.workspace.getConfiguration();
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
