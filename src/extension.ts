@@ -1558,12 +1558,23 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'sideBar.border':                     deep(0.70),   // sidebar right border
         'activityBarBadge.background':        titleHex,     // badge (notification dot) — accent color
         'activityBarBadge.foreground':        fgTitle,      // badge text
+        // ── List / tree items (terminal tabs, file explorer, extension list…) ──
+        // Without these, text/icons inherit from the base theme but look invisible
+        // against our very dark panel backgrounds.
+        'list.foreground':                    lightenHex(titleHex, 0.72),  // default item text — light tint of title
+        'list.activeSelectionForeground':     lightenHex(titleHex, 0.90),  // selected item text — near white
+        'list.activeSelectionBackground':     deep(0.60),                  // selected item bg — lighter panel
+        'list.inactiveSelectionForeground':   lightenHex(titleHex, 0.72),  // unfocused selection text
+        'list.inactiveSelectionBackground':   deep(0.70),                  // unfocused selection bg
+        'list.hoverForeground':               lightenHex(titleHex, 0.82),  // hover text — brighter
+        'list.hoverBackground':               deep(0.65),                  // hover bg
+        'list.focusForeground':               lightenHex(titleHex, 0.90),  // keyboard-focused item
         // ── Terminal UI ───────────────────────────────────────────────────────
-        'terminalCursor.foreground':          titleHex,                   // cursor dot — top edge color
-        'terminalCursor.background':          deep(0.90),                 // char under cursor
-        'terminal.selectionBackground':       titleHex + '33',            // text selection highlight
-        'terminal.inactiveSelectionBackground': titleHex + '1a',          // unfocused selection
-        'list.warningForeground':             lightenHex(statusHex, 0.15), // ⚠ warning icons — bottom edge color
+        'terminalCursor.foreground':          titleHex,                    // cursor dot — top edge color
+        'terminalCursor.background':          deep(0.90),                  // char under cursor
+        'terminal.selectionBackground':       titleHex + '33',             // text selection highlight
+        'terminal.inactiveSelectionBackground': titleHex + '1a',           // unfocused selection
+        'list.warningForeground':             lightenHex(statusHex, 0.35), // ⚠ warning icons — bright enough to see
         'terminalCommandDecoration.defaultBackground':  actHex + '80',    // gutter marker — left edge color
         'terminalCommandDecoration.successBackground':  lightenHex(actHex, 0.20),  // success marker
         'terminalCommandDecoration.errorBackground':    lightenHex(statusHex, 0.10), // error marker
@@ -1580,6 +1591,13 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         // Cyan family → blend of title + activity
         'terminal.ansiCyan':                  blendHex(titleHex, actHex, 0.5),
         'terminal.ansiBrightCyan':            lightenHex(blendHex(titleHex, actHex, 0.5), 0.20),
+        // ── Buttons (global — affects all VS Code buttons incl. notification popups) ──
+        'button.background':                  titleHex,              // primary button (Yes / Install / Save)
+        'button.foreground':                  fgTitle,               // primary button text
+        'button.hoverBackground':             lightenHex(titleHex, 0.15), // primary hover
+        'button.secondaryBackground':         deep(0.62),            // secondary button (No / Cancel)
+        'button.secondaryForeground':         '#ffffffcc',           // secondary button text
+        'button.secondaryHoverBackground':    deep(0.50),            // secondary hover
     }, vscode.ConfigurationTarget.Workspace);
 
     // Drive syntax palette from all three edge colors so each tick/mode state
@@ -1613,6 +1631,9 @@ async function removeProjectColor(): Promise<void> {
         'activityBarBadge.background', 'activityBarBadge.foreground',
         'editorStickyScroll.background', 'editorStickyScrollHover.background', 'editorStickyScrollBorder.shadow',
         'breadcrumb.background',
+        'list.foreground', 'list.activeSelectionForeground', 'list.activeSelectionBackground',
+        'list.inactiveSelectionForeground', 'list.inactiveSelectionBackground',
+        'list.hoverForeground', 'list.hoverBackground', 'list.focusForeground',
         'terminalCursor.foreground', 'terminalCursor.background',
         'terminal.selectionBackground', 'terminal.inactiveSelectionBackground',
         'list.warningForeground',
@@ -1621,6 +1642,8 @@ async function removeProjectColor(): Promise<void> {
         'terminal.ansiMagenta', 'terminal.ansiBrightMagenta',
         'terminal.ansiYellow', 'terminal.ansiBrightYellow',
         'terminal.ansiCyan', 'terminal.ansiBrightCyan',
+        'button.background', 'button.foreground', 'button.hoverBackground',
+        'button.secondaryBackground', 'button.secondaryForeground', 'button.secondaryHoverBackground',
     ];
     const cfg  = vscode.workspace.getConfiguration();
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
