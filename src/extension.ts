@@ -1313,6 +1313,166 @@ async function applyAnimatedProjectColor(baseHex: string, mode: ColorMode, phase
     }
 }
 
+// ---------------------------------------------------------------------------
+// Syntax theme — derives a full token + semantic palette from the project hue
+// ---------------------------------------------------------------------------
+
+function buildSyntaxPalette(baseHex: string) {
+    const { h } = hexToHsl(baseHex);
+    const S = 0.80; // fixed vivid saturation for all syntax colors
+    return {
+        keyword:   hslToHex(h,         S,        0.68), // keywords, control flow, storage
+        func:      hslToHex(h + 30,    S,        0.72), // functions, methods — warm shift
+        type:      hslToHex(h + 60,    S,        0.70), // types, classes, structs
+        property:  hslToHex(h + 100,   S * 0.85, 0.67), // properties, members
+        string:    hslToHex(h + 150,   S,        0.68), // strings — split-complement hue
+        number:    hslToHex(h + 200,   S,        0.70), // numbers, booleans, null
+        constant:  hslToHex(h + 240,   S * 0.75, 0.72), // named constants, enum members
+        namespace: hslToHex(h + 270,   S * 0.80, 0.65), // namespaces, modules, imports
+        variable:  hslToHex(h,         0.15,     0.87), // variables — near-white faint tint
+        parameter: hslToHex(h,         0.22,     0.80), // parameters — slightly more tinted
+        comment:   hslToHex(h,         0.18,     0.43), // comments — muted dark
+        operator:  hslToHex(h,         0.10,     0.62), // operators, punctuation — mid-grey
+        tag:       hslToHex(h + 20,    S,        0.68), // HTML/JSX tags
+        attribute: hslToHex(h + 80,    S * 0.80, 0.68), // HTML/JSX attributes
+        regexp:    hslToHex(h + 180,   S,        0.72), // regex literals
+    };
+}
+
+async function applySyntaxTheme(baseHex: string): Promise<void> {
+    const p = buildSyntaxPalette(baseHex);
+    const cfg = vscode.workspace.getConfiguration();
+
+    // ── TextMate token colors (grammar-based, works in all languages) ────────
+    await cfg.update('editor.tokenColorCustomizations', {
+        textMateRules: [
+            // Keywords & control flow
+            {
+                scope: ['keyword', 'keyword.control', 'keyword.control.flow',
+                        'storage.type', 'storage.modifier', 'keyword.declaration'],
+                settings: { foreground: p.keyword },
+            },
+            // Functions
+            {
+                scope: ['entity.name.function', 'support.function', 'meta.function-call.generic'],
+                settings: { foreground: p.func },
+            },
+            // Types & classes
+            {
+                scope: ['entity.name.type', 'entity.name.class', 'entity.other.inherited-class',
+                        'support.class', 'entity.name.struct'],
+                settings: { foreground: p.type },
+            },
+            // Properties & members
+            {
+                scope: ['variable.other.property', 'variable.other.object.property',
+                        'support.variable.property', 'meta.property-name'],
+                settings: { foreground: p.property },
+            },
+            // Strings
+            {
+                scope: ['string', 'string.quoted', 'string.template'],
+                settings: { foreground: p.string },
+            },
+            // Numbers, booleans, null/undefined
+            {
+                scope: ['constant.numeric', 'constant.language.boolean',
+                        'constant.language.null', 'constant.language.undefined'],
+                settings: { foreground: p.number },
+            },
+            // Named constants
+            {
+                scope: ['constant.other', 'variable.other.constant'],
+                settings: { foreground: p.constant },
+            },
+            // Namespaces, modules, imports
+            {
+                scope: ['entity.name.namespace', 'entity.name.module',
+                        'keyword.control.import', 'keyword.control.from', 'keyword.control.export'],
+                settings: { foreground: p.namespace },
+            },
+            // Variables
+            {
+                scope: ['variable', 'variable.other', 'variable.other.readwrite'],
+                settings: { foreground: p.variable },
+            },
+            // Parameters
+            {
+                scope: ['variable.parameter', 'meta.parameter'],
+                settings: { foreground: p.parameter, fontStyle: 'italic' },
+            },
+            // Comments
+            {
+                scope: ['comment', 'comment.line', 'comment.block', 'punctuation.definition.comment'],
+                settings: { foreground: p.comment, fontStyle: 'italic' },
+            },
+            // Operators & punctuation
+            {
+                scope: ['keyword.operator', 'punctuation.separator', 'punctuation.terminator'],
+                settings: { foreground: p.operator },
+            },
+            // HTML/JSX tags
+            {
+                scope: ['entity.name.tag', 'meta.tag.sgml'],
+                settings: { foreground: p.tag },
+            },
+            // HTML/JSX attributes
+            {
+                scope: ['entity.other.attribute-name'],
+                settings: { foreground: p.attribute },
+            },
+            // Regex
+            {
+                scope: ['string.regexp', 'constant.regexp'],
+                settings: { foreground: p.regexp },
+            },
+        ],
+    }, vscode.ConfigurationTarget.Workspace);
+
+    // ── Semantic token colors (LSP-aware — smarter than TextMate) ────────────
+    await cfg.update('editor.semanticTokenColorCustomizations', {
+        enabled: true,
+        rules: {
+            'keyword':                { foreground: p.keyword },
+            'function':               { foreground: p.func },
+            'function.declaration':   { foreground: p.func, bold: true },
+            'method':                 { foreground: p.func },
+            'method.declaration':     { foreground: p.func, bold: true },
+            'class':                  { foreground: p.type },
+            'class.declaration':      { foreground: p.type, bold: true },
+            'interface':              { foreground: p.type, italic: true },
+            'type':                   { foreground: p.type },
+            'typeParameter':          { foreground: p.type, italic: true },
+            'property':               { foreground: p.property },
+            'property.declaration':   { foreground: p.property },
+            'variable':               { foreground: p.variable },
+            'variable.declaration':   { foreground: p.variable },
+            'parameter':              { foreground: p.parameter, italic: true },
+            'namespace':              { foreground: p.namespace },
+            'module':                 { foreground: p.namespace },
+            'string':                 { foreground: p.string },
+            'number':                 { foreground: p.number },
+            'regexp':                 { foreground: p.regexp },
+            'operator':               { foreground: p.operator },
+            'comment':                { foreground: p.comment, italic: true },
+            'macro':                  { foreground: p.constant },
+            'enumMember':             { foreground: p.constant },
+            'enum':                   { foreground: p.type },
+            'decorator':              { foreground: p.namespace, italic: true },
+            'annotation':             { foreground: p.namespace, italic: true },
+            'label':                  { foreground: p.keyword },
+        },
+    }, vscode.ConfigurationTarget.Workspace);
+}
+
+async function removeSyntaxTheme(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration();
+    await cfg.update('editor.tokenColorCustomizations',      undefined, vscode.ConfigurationTarget.Workspace);
+    await cfg.update('editor.semanticTokenColorCustomizations', undefined, vscode.ConfigurationTarget.Workspace);
+}
+
+// ---------------------------------------------------------------------------
+
 async function applyProjectColor(baseHex: string, titleHex: string, actHex: string, statusHex: string, cmdBorderHex?: string): Promise<void> {
     const fgTitle  = getContrastColor(titleHex);
     const fgAct    = getContrastColor(actHex);
@@ -1392,6 +1552,8 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'activityBarBadge.background':        titleHex,     // badge (notification dot) — accent color
         'activityBarBadge.foreground':        fgTitle,      // badge text
     }, vscode.ConfigurationTarget.Workspace);
+
+    await applySyntaxTheme(baseHex);
 }
 
 async function removeProjectColor(): Promise<void> {
@@ -1429,6 +1591,8 @@ async function removeProjectColor(): Promise<void> {
     await cfg.update('workbench.colorCustomizations',
         Object.keys(cleaned).length > 0 ? cleaned : undefined,
         vscode.ConfigurationTarget.Workspace);
+
+    await removeSyntaxTheme();
 }
 
 async function deleteFromList(configKey: 'priorityProjects' | 'allProjects', projectPath: string, label: string): Promise<void> {
