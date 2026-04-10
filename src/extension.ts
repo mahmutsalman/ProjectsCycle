@@ -448,12 +448,6 @@ export function activate(context: vscode.ExtensionContext): void {
         'ember':    'Ember',
     };
 
-    // Restore and advance phase for time elapsed since last session
-    let colorPhase = store.getColorPhase();
-    const savedTick = store.getColorLastTick();
-    if (savedTick > 0) {
-        colorPhase = (colorPhase + (Date.now() - savedTick) / (5 * 60_000)) % 1;
-    }
     // Per-window color mode stored in workspaceState — each window has its own mode
     // independently of other open windows. Falls back to 'standard' if not set.
     const validModes: ColorMode[] = ['standard', 'pulse', 'aurora', 'neon', 'ember'];
@@ -463,6 +457,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Freeze toggle — pauses animation at the current color state
     let colorFrozen = context.workspaceState.get<boolean>('colorFrozen', false);
+
+    // Restore phase; only advance for elapsed time if animation is NOT frozen
+    let colorPhase = store.getColorPhase();
+    const savedTick = store.getColorLastTick();
+    if (savedTick > 0 && !colorFrozen) {
+        colorPhase = (colorPhase + (Date.now() - savedTick) / (5 * 60_000)) % 1;
+    }
 
     const priorityProvider = new ProjectsProvider('priorityProjects', 'priorityItem', storagePath, tracker, store);
     const allProvider      = new ProjectsProvider('allProjects',      'allItem',      storagePath, tracker, store);
@@ -517,7 +518,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // Apply this project's color to workbench on startup
         const startupColor = store.getColors()[currentProject];
         if (startupColor) {
-            applyAnimatedProjectColor(startupColor, store.getColorMode(), colorPhase);
+            applyAnimatedProjectColor(startupColor, activeColorMode, colorPhase);
         } else {
             removeProjectColor();
         }
@@ -696,7 +697,7 @@ export function activate(context: vscode.ExtensionContext): void {
             qp.onDidChangeActive(active => {
                 const a = active[0] as ColorPickItem | undefined;
                 if (isActiveProject && a?.hex) {
-                    applyAnimatedProjectColor(a.hex, store.getColorMode(), colorPhase);
+                    applyAnimatedProjectColor(a.hex, activeColorMode, colorPhase);
                 }
             });
 
@@ -764,7 +765,7 @@ export function activate(context: vscode.ExtensionContext): void {
             store.setColors(colors);
             priorityProvider.refresh();
             allProvider.refresh();
-            if (isActiveProject) { await applyAnimatedProjectColor(finalHex, store.getColorMode(), colorPhase); }
+            if (isActiveProject) { await applyAnimatedProjectColor(finalHex, activeColorMode, colorPhase); }
         }),
     );
 
