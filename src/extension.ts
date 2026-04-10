@@ -107,7 +107,7 @@ class TimeTracker {
 // Project Store  (replaces VS Code settings for project lists & colors)
 // ---------------------------------------------------------------------------
 
-type ColorMode = 'standard' | 'depth' | 'hue-drift' | 'warmth' | 'saturation';
+type ColorMode = 'standard' | 'pulse' | 'aurora' | 'neon' | 'ember';
 
 interface ProjectsData {
     priorityProjects: string[];
@@ -201,7 +201,11 @@ class ProjectStore {
         this.save();
     }
 
-    getColorMode(): ColorMode { return this.data.colorMode ?? 'standard'; }
+    getColorMode(): ColorMode {
+        const valid: string[] = ['standard', 'pulse', 'aurora', 'neon', 'ember'];
+        const m = this.data.colorMode as string | undefined;
+        return (m && valid.includes(m) ? m : 'standard') as ColorMode;
+    }
     setColorMode(mode: ColorMode): void { this.data.colorMode = mode; this.save(); }
     getColorPhase(): number { return this.data.colorPhase ?? 0; }
     getColorLastTick(): number { return this.data.colorLastTick ?? 0; }
@@ -435,13 +439,13 @@ export function activate(context: vscode.ExtensionContext): void {
     navHist = new SharedNavHistory(storagePath);
     const currentProject = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-    const COLOR_MODES: ColorMode[] = ['standard', 'depth', 'hue-drift', 'warmth', 'saturation'];
+    const COLOR_MODES: ColorMode[] = ['standard', 'pulse', 'aurora', 'neon', 'ember'];
     const MODE_LABELS: Record<ColorMode, string> = {
-        'standard':   'Standard',
-        'depth':      'Depth Breathing',
-        'hue-drift':  'Hue Drift',
-        'warmth':     'Warmth Cycle',
-        'saturation': 'Saturation Pulse',
+        'standard': 'Standard',
+        'pulse':    'Pulse',
+        'aurora':   'Aurora',
+        'neon':     'Neon',
+        'ember':    'Ember',
     };
 
     // Restore and advance phase for time elapsed since last session
@@ -666,7 +670,7 @@ export function activate(context: vscode.ExtensionContext): void {
             qp.onDidChangeActive(active => {
                 const a = active[0] as ColorPickItem | undefined;
                 if (isActiveProject && a?.hex) {
-                    applyProjectColor(a.hex);
+                    applyAnimatedProjectColor(a.hex, store.getColorMode(), colorPhase);
                 }
             });
 
@@ -1222,56 +1226,101 @@ function blendHex(hex1: string, hex2: string, t: number): string {
 }
 
 async function applyAnimatedProjectColor(baseHex: string, mode: ColorMode, phase: number): Promise<void> {
-    if (mode === 'standard') { return applyProjectColor(baseHex); }
     const sin = Math.sin(phase * 2 * Math.PI);
-    const t = (1 + sin) / 2;  // 0→1 oscillation
+    const t   = (1 + sin) / 2;   // 0..1 smooth oscillation
+    const { h, s, l } = hexToHsl(baseHex);
 
-    if (mode === 'hue-drift') {
-        const { h, s, l } = hexToHsl(baseHex);
-        return applyProjectColor(hslToHex(h + 30 * sin, s, l));
+    switch (mode) {
+        case 'pulse': {
+            // Title bar breathes in/out; activity anchors steady; status stays deep
+            const breatheL = Math.max(0.15, Math.min(0.92, l + 0.24 + 0.16 * sin));
+            return applyProjectColor(
+                hslToHex(h, s * 0.88, breatheL),               // title — breathes
+                hslToHex(h, s, l),                              // activity — steady
+                hslToHex(h, Math.min(1, s * 1.1), Math.max(0.06, l - 0.24)), // status — anchored
+            );
+        }
+
+        case 'aurora': {
+            // Three zones float at staggered hue offsets, all slowly rotating together.
+            // Title is warmer, activity is base, status is cooler — like a northern lights column.
+            const drift  = phase * 72;   // 72° rotation per full phase cycle
+            const spread = 28;
+            const borderL = Math.min(0.82, l + 0.42 + 0.08 * t);
+            return applyProjectColor(
+                hslToHex(h + drift + spread,  Math.min(1, s * 0.82), Math.min(0.88, l + 0.30)),
+                hslToHex(h + drift,            s,                     l),
+                hslToHex(h + drift - spread,   Math.min(1, s * 0.88), Math.max(0.07, l - 0.26)),
+                hslToHex(h + drift + spread * 1.6, Math.min(1, s), borderL), // cmd border — aurora shimmer
+            );
+        }
+
+        case 'neon': {
+            // Max saturation chrome. Command center glows with a pulsing border.
+            const boostS    = Math.min(1, s + 0.38 + 0.07 * sin);
+            const borderL   = Math.min(0.88, l + 0.48 + 0.10 * t);
+            return applyProjectColor(
+                hslToHex(h, boostS, Math.min(0.80, l + 0.24)),    // title — vibrant light
+                hslToHex(h, boostS, l),                             // activity — full neon
+                hslToHex(h, boostS, Math.max(0.09, l - 0.20)),     // status — deep neon
+                hslToHex(h, 1, borderL),                            // cmd border — glowing ring
+            );
+        }
+
+        case 'ember': {
+            // Left edge (activity) glows hot like embers; top cools; bottom chars deep.
+            // The flicker shifts the warm push slightly on each tick.
+            const flicker  = 14 + 9 * t;                          // 14°–23° warm hue push
+            const warmH    = h + flicker;
+            return applyProjectColor(
+                hslToHex(warmH + 10, s * 0.78, Math.min(0.84, l + 0.28)),     // title — cool surface
+                hslToHex(warmH,      Math.min(1, s * 1.30), l + 0.05 * sin),  // activity — ember glow
+                hslToHex(h - 10,     Math.min(1, s * 1.12), Math.max(0.05, l - 0.30)), // status — charcoal
+            );
+        }
+
+        default: {
+            // 'standard' + any legacy stored mode value → static water flood
+            return applyProjectColor(
+                lightenHex(baseHex, 0.38),  // title — surface
+                baseHex,                     // activity — mid
+                darkenHex(baseHex, 0.15),   // status — deep
+            );
+        }
     }
-    if (mode === 'warmth') {
-        const hex = sin > 0
-            ? blendHex(baseHex, '#ff8c00', sin * 0.25)
-            : blendHex(baseHex, '#0088ff', -sin * 0.25);
-        return applyProjectColor(hex);
-    }
-    if (mode === 'saturation') {
-        const { h, s, l } = hexToHsl(baseHex);
-        return applyProjectColor(hslToHex(h, s * (0.35 + 0.65 * t), l));
-    }
-    // depth breathing — varies water levels around the standard midpoint (t=0.5)
-    const titleLighten = 0.65 - 0.55 * t;                                     // 0.65 → 0.10
-    const actHex       = blendHex(lightenHex(baseHex, 0.20), darkenHex(baseHex, 0.10), t);
-    const statusDarken = 0.30 * t;                                             // 0 → 0.30
-    return applyProjectColor(baseHex, titleLighten, actHex, statusDarken);
 }
 
-async function applyProjectColor(hex: string, titleLightenAmt = 0.38, actHex?: string, statusDarkenAmt = 0.15): Promise<void> {
-    // Water flooding from bottom to top: deepest at status bar, lightest at title bar
-    const deep    = darkenHex(hex, statusDarkenAmt);  // status bar — deepest water
-    const mid     = actHex ?? hex;                    // activity bar — mid water level
-    const surface = lightenHex(hex, titleLightenAmt); // title bar — surface, barely flooded
+async function applyProjectColor(titleHex: string, actHex: string, statusHex: string, cmdBorderHex?: string): Promise<void> {
+    const fgTitle  = getContrastColor(titleHex);
+    const fgAct    = getContrastColor(actHex);
+    const fgStatus = getContrastColor(statusHex);
 
-    const fgDeep    = getContrastColor(deep);
-    const fgMid     = getContrastColor(mid);
-    const fgSurface = getContrastColor(surface);
+    // Command center pill: tinted darker than title bar so it reads as a pill-in-bar
+    const cmdBg     = darkenHex(titleHex, 0.24);
+    const cmdFg     = getContrastColor(cmdBg);
+    const cmdBorder = cmdBorderHex ?? (titleHex + '55');  // translucent title bar hue
 
     const cfg = vscode.workspace.getConfiguration();
     const cur = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
     await cfg.update('workbench.colorCustomizations', {
         ...cur,
-        'titleBar.activeBackground':      surface,
-        'titleBar.activeForeground':      fgSurface,
-        'titleBar.inactiveBackground':    darkenHex(surface, 0.12),
-        'titleBar.inactiveForeground':    fgSurface + 'aa',
-        'activityBar.background':         mid,
-        'activityBar.activeBackground':   mid,
-        'activityBar.activeBorder':       fgMid + '00',
-        'activityBar.foreground':         fgMid,
-        'activityBar.inactiveForeground': fgMid + '88',
-        'statusBar.background':           deep,
-        'statusBar.foreground':           fgDeep,
+        'titleBar.activeBackground':          titleHex,
+        'titleBar.activeForeground':          fgTitle,
+        'titleBar.inactiveBackground':        darkenHex(titleHex, 0.12),
+        'titleBar.inactiveForeground':        fgTitle + 'aa',
+        'commandCenter.background':           cmdBg,
+        'commandCenter.foreground':           cmdFg,
+        'commandCenter.border':               cmdBorder,
+        'commandCenter.activeBorder':         cmdBorderHex ?? lightenHex(titleHex, 0.28),
+        'commandCenter.inactiveForeground':   cmdFg + '88',
+        'commandCenter.inactiveBackground':   darkenHex(cmdBg, 0.10),
+        'activityBar.background':             actHex,
+        'activityBar.activeBackground':       actHex,
+        'activityBar.activeBorder':           fgAct + '00',
+        'activityBar.foreground':             fgAct,
+        'activityBar.inactiveForeground':     fgAct + '88',
+        'statusBar.background':               statusHex,
+        'statusBar.foreground':               fgStatus,
     }, vscode.ConfigurationTarget.Workspace);
 }
 
@@ -1279,6 +1328,9 @@ async function removeProjectColor(): Promise<void> {
     const ours = [
         'titleBar.activeBackground', 'titleBar.activeForeground',
         'titleBar.inactiveBackground', 'titleBar.inactiveForeground',
+        'commandCenter.background', 'commandCenter.foreground',
+        'commandCenter.border', 'commandCenter.activeBorder',
+        'commandCenter.inactiveForeground', 'commandCenter.inactiveBackground',
         'activityBar.background', 'activityBar.activeBackground', 'activityBar.activeBorder',
         'activityBar.foreground', 'activityBar.inactiveForeground',
         'statusBar.background', 'statusBar.foreground',
