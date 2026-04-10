@@ -1318,30 +1318,36 @@ async function applyAnimatedProjectColor(baseHex: string, mode: ColorMode, phase
 // Syntax theme — derives a full token + semantic palette from the project hue
 // ---------------------------------------------------------------------------
 
-function buildSyntaxPalette(baseHex: string) {
-    const { h } = hexToHsl(baseHex);
-    const S = 0.80; // fixed vivid saturation for all syntax colors
+function buildSyntaxPalette(titleHex: string, actHex: string, statusHex: string) {
+    const { h: hT } = hexToHsl(titleHex);   // top edge   → keywords, types, classes
+    const { h: hA } = hexToHsl(actHex);     // left edge  → functions, methods, namespaces
+    const { h: hS } = hexToHsl(statusHex);  // bottom edge → strings, numbers, constants
+    const S = 0.80;
     return {
-        keyword:   hslToHex(h,         S,        0.68), // keywords, control flow, storage
-        func:      hslToHex(h + 30,    S,        0.72), // functions, methods — warm shift
-        type:      hslToHex(h + 60,    S,        0.70), // types, classes, structs
-        property:  hslToHex(h + 100,   S * 0.85, 0.67), // properties, members
-        string:    hslToHex(h + 150,   S,        0.68), // strings — split-complement hue
-        number:    hslToHex(h + 200,   S,        0.70), // numbers, booleans, null
-        constant:  hslToHex(h + 240,   S * 0.75, 0.72), // named constants, enum members
-        namespace: hslToHex(h + 270,   S * 0.80, 0.65), // namespaces, modules, imports
-        variable:  hslToHex(h,         0.15,     0.87), // variables — near-white faint tint
-        parameter: hslToHex(h,         0.22,     0.80), // parameters — slightly more tinted
-        comment:   hslToHex(h,         0.18,     0.43), // comments — muted dark
-        operator:  hslToHex(h,         0.10,     0.62), // operators, punctuation — mid-grey
-        tag:       hslToHex(h + 20,    S,        0.68), // HTML/JSX tags
-        attribute: hslToHex(h + 80,    S * 0.80, 0.68), // HTML/JSX attributes
-        regexp:    hslToHex(h + 180,   S,        0.72), // regex literals
+        // ── Title color group (top edge) ──────────────────────────────────────
+        keyword:   hslToHex(hT,       S,        0.68), // keywords, control flow, storage
+        type:      hslToHex(hT + 35,  S,        0.70), // types, classes, structs
+        tag:       hslToHex(hT + 20,  S,        0.68), // HTML/JSX tags
+        // ── Activity color group (left edge) ─────────────────────────────────
+        func:      hslToHex(hA,       S,        0.72), // functions, methods
+        namespace: hslToHex(hA + 35,  S * 0.85, 0.67), // namespaces, modules, imports
+        attribute: hslToHex(hA + 60,  S * 0.80, 0.68), // HTML/JSX attributes, decorators
+        property:  hslToHex(hA - 30,  S * 0.80, 0.67), // object properties, members
+        // ── Status color group (bottom edge) ─────────────────────────────────
+        string:    hslToHex(hS,       S,        0.68), // string literals
+        number:    hslToHex(hS + 35,  S,        0.70), // numbers, booleans, null
+        constant:  hslToHex(hS + 65,  S * 0.75, 0.72), // named constants, enum members
+        regexp:    hslToHex(hS - 30,  S,        0.72), // regex literals
+        // ── Neutrals (muted, derived from title hue) ──────────────────────────
+        variable:  hslToHex(hT,       0.15,     0.87), // variables — near-white faint tint
+        parameter: hslToHex(hT,       0.22,     0.80), // parameters — slightly more tinted
+        comment:   hslToHex(hT,       0.18,     0.43), // comments — muted dark
+        operator:  hslToHex(hT,       0.10,     0.62), // operators, punctuation — mid-grey
     };
 }
 
-async function applySyntaxTheme(baseHex: string): Promise<void> {
-    const p = buildSyntaxPalette(baseHex);
+async function applySyntaxTheme(titleHex: string, actHex: string, statusHex: string): Promise<void> {
+    const p = buildSyntaxPalette(titleHex, actHex, statusHex);
     const cfg = vscode.workspace.getConfiguration();
 
     // ── TextMate token colors (grammar-based, works in all languages) ────────
@@ -1552,11 +1558,34 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'sideBar.border':                     deep(0.70),   // sidebar right border
         'activityBarBadge.background':        titleHex,     // badge (notification dot) — accent color
         'activityBarBadge.foreground':        fgTitle,      // badge text
+        // ── Terminal UI ───────────────────────────────────────────────────────
+        'terminalCursor.foreground':          titleHex,                   // cursor dot — top edge color
+        'terminalCursor.background':          deep(0.90),                 // char under cursor
+        'terminal.selectionBackground':       titleHex + '33',            // text selection highlight
+        'terminal.inactiveSelectionBackground': titleHex + '1a',          // unfocused selection
+        'list.warningForeground':             lightenHex(statusHex, 0.15), // ⚠ warning icons — bottom edge color
+        'terminalCommandDecoration.defaultBackground':  actHex + '80',    // gutter marker — left edge color
+        'terminalCommandDecoration.successBackground':  lightenHex(actHex, 0.20),  // success marker
+        'terminalCommandDecoration.errorBackground':    lightenHex(statusHex, 0.10), // error marker
+        // ── Terminal ANSI palette (project-tinted) ────────────────────────────
+        // Blue family → title color (top edge)
+        'terminal.ansiBlue':                  darkenHex(titleHex, 0.10),
+        'terminal.ansiBrightBlue':            lightenHex(titleHex, 0.20),
+        // Magenta family → activity color (left edge)
+        'terminal.ansiMagenta':               darkenHex(actHex, 0.10),
+        'terminal.ansiBrightMagenta':         lightenHex(actHex, 0.20),
+        // Yellow family → status color (bottom edge) — replaces the default golden yellow
+        'terminal.ansiYellow':                darkenHex(statusHex, 0.10),
+        'terminal.ansiBrightYellow':          lightenHex(statusHex, 0.20),
+        // Cyan family → blend of title + activity
+        'terminal.ansiCyan':                  blendHex(titleHex, actHex, 0.5),
+        'terminal.ansiBrightCyan':            lightenHex(blendHex(titleHex, actHex, 0.5), 0.20),
     }, vscode.ConfigurationTarget.Workspace);
 
-    // Drive syntax palette from the animated title color, not the static base —
-    // so each tick/mode state gets its own unique syntax color set.
-    await applySyntaxTheme(titleHex);
+    // Drive syntax palette from all three edge colors so each tick/mode state
+    // produces a unique 3-anchor palette: title→keywords/types, act→functions/namespaces,
+    // status→strings/numbers/constants.
+    await applySyntaxTheme(titleHex, actHex, statusHex);
 }
 
 async function removeProjectColor(): Promise<void> {
@@ -1584,6 +1613,14 @@ async function removeProjectColor(): Promise<void> {
         'activityBarBadge.background', 'activityBarBadge.foreground',
         'editorStickyScroll.background', 'editorStickyScrollHover.background', 'editorStickyScrollBorder.shadow',
         'breadcrumb.background',
+        'terminalCursor.foreground', 'terminalCursor.background',
+        'terminal.selectionBackground', 'terminal.inactiveSelectionBackground',
+        'list.warningForeground',
+        'terminalCommandDecoration.defaultBackground', 'terminalCommandDecoration.successBackground', 'terminalCommandDecoration.errorBackground',
+        'terminal.ansiBlue', 'terminal.ansiBrightBlue',
+        'terminal.ansiMagenta', 'terminal.ansiBrightMagenta',
+        'terminal.ansiYellow', 'terminal.ansiBrightYellow',
+        'terminal.ansiCyan', 'terminal.ansiBrightCyan',
     ];
     const cfg  = vscode.workspace.getConfiguration();
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
