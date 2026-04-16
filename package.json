@@ -145,12 +145,40 @@
         "icon": "$(run-all)"
       },
       {
+        "command": "projectcycle.closeAllPriority",
+        "title": "Close All Priority Projects",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "projectcycle.suspendAllPriority",
+        "title": "Suspend All Priority Projects",
+        "icon": "$(debug-pause)"
+      },
+      {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
       },
       {
         "command": "projectcycle.goBack",
         "title": "ProjectCycle: Go to Previous Window"
+      },
+      {
+        "command": "projectcycle.suspendProject",
+        "title": "Suspend",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "projectcycle.resumeProject",
+        "title": "Resume",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "projectcycle.prototypePids",
+        "title": "ProjectCycle: [Debug] Probe Window PIDs"
+      },
+      {
+        "command": "projectcycle.probeWindowMap",
+        "title": "ProjectCycle: [Debug] Show Window → Folder Map"
       }
     ],
     "menus": {
@@ -184,6 +212,16 @@
           "command": "projectcycle.openAllPriority",
           "when": "view == projectcycle.priorityView",
           "group": "navigation@6"
+        },
+        {
+          "command": "projectcycle.closeAllPriority",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "projectcycle.suspendAllPriority",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@8"
         },
         {
           "command": "projectcycle.addCurrentToAll",
@@ -256,6 +294,26 @@
           "command": "projectcycle.assignColor",
           "when": "view == projectcycle.allView && (viewItem == allItem || viewItem == allItemOpen || viewItem == allItemFavorite || viewItem == allItemFavoriteOpen)",
           "group": "1_actions@1"
+        },
+        {
+          "command": "projectcycle.suspendProject",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItemOpen",
+          "group": "inline@5"
+        },
+        {
+          "command": "projectcycle.suspendProject",
+          "when": "view == projectcycle.allView && (viewItem == allItemOpen || viewItem == allItemFavoriteOpen)",
+          "group": "inline@5"
+        },
+        {
+          "command": "projectcycle.resumeProject",
+          "when": "view == projectcycle.priorityView && viewItem == priorityItemSuspended",
+          "group": "inline@5"
+        },
+        {
+          "command": "projectcycle.resumeProject",
+          "when": "view == projectcycle.allView && (viewItem == allItemSuspended || viewItem == allItemFavoriteSuspended)",
+          "group": "inline@5"
         }
       ]
     },

@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 let openWindowNames: Set<string> = new Set();
 let navHist: SharedNavHistory;
 let store: ProjectStore;
+// suspendedProjects is now persisted via ProjectStore.suspendProject/resumeProject
 
 // ---------------------------------------------------------------------------
 // Color Palette
@@ -114,13 +115,14 @@ interface ProjectsData {
     allProjects: string[];
     projectColors: Record<string, string>;
     favorites: string[];
+    suspendedProjects: string[];
     colorMode?: ColorMode;
     colorPhase?: number;
     colorLastTick?: number;
 }
 
 class ProjectStore {
-    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [] };
+    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [] };
     private readonly filePath: string;
 
     constructor(storagePath: string) {
@@ -133,9 +135,9 @@ class ProjectStore {
         try {
             if (fs.existsSync(this.filePath)) {
                 const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], ...parsed };
+                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [], ...parsed };
             }
-        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [] }; }
+        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [] }; }
     }
 
     save(): void {
@@ -198,6 +200,19 @@ class ProjectStore {
         const idx = favs.indexOf(p);
         if (idx >= 0) { favs.splice(idx, 1); } else { favs.push(p); }
         this.data.favorites = favs;
+        this.save();
+    }
+
+    getSuspended(): string[] { return [...(this.data.suspendedProjects ?? [])]; }
+    isSuspended(p: string): boolean { return (this.data.suspendedProjects ?? []).includes(p); }
+    suspendProject(p: string): void {
+        const list = this.data.suspendedProjects ?? [];
+        if (!list.includes(p)) { list.push(p); }
+        this.data.suspendedProjects = list;
+        this.save();
+    }
+    resumeProject(p: string): void {
+        this.data.suspendedProjects = (this.data.suspendedProjects ?? []).filter(x => x !== p);
         this.save();
     }
 
@@ -279,17 +294,19 @@ class ProjectItem extends vscode.TreeItem {
         private readonly storagePath?: string,
         isOpen: boolean = false,
         timeStr?: string,
+        isSuspended: boolean = false,
     ) {
         super(path.basename(projectPath), vscode.TreeItemCollapsibleState.None);
-        this.description = timeStr ? `#${index + 1}  ${timeStr}` : `#${index + 1}`;
-        this.tooltip = `${projectPath}\n${isOpen ? '● Open' : '○ Closed'}`;
-        this.contextValue = isOpen ? contextVal + 'Open' : contextVal;
-        this.iconPath = storagePath
-            ? getColoredFolderIcon(color ?? null, isOpen, storagePath)
-            : new vscode.ThemeIcon('folder');
+        const suspendedSuffix = isSuspended ? '  💤' : '';
+        this.description = timeStr ? `#${index + 1}  ${timeStr}${suspendedSuffix}` : `#${index + 1}${suspendedSuffix}`;
+        this.tooltip = `${projectPath}\n${isSuspended ? '💤 Suspended — click to resume' : isOpen ? '● Open' : '○ Closed'}`;
+        this.contextValue = isSuspended ? contextVal + 'Suspended' : (isOpen ? contextVal + 'Open' : contextVal);
+        this.iconPath = isSuspended
+            ? new vscode.ThemeIcon('debug-pause', new vscode.ThemeColor('list.deemphasizedForeground'))
+            : (storagePath ? getColoredFolderIcon(color ?? null, isOpen, storagePath) : new vscode.ThemeIcon('folder'));
         this.command = {
             command: 'projectcycle.activateProject',
-            title: isOpen ? 'Focus Window' : 'Open Project',
+            title: isSuspended ? 'Resume & Focus' : (isOpen ? 'Focus Window' : 'Open Project'),
             arguments: [projectPath, isOpen],
         };
     }
@@ -330,12 +347,12 @@ class ProjectsProvider implements vscode.TreeDataProvider<ProjectItem> {
             items = paths.map((p, i) => {
                 const timeStr = this.tracker.format(this.tracker.getSeconds(p));
                 const ctxVal = favSet.has(p) ? 'allItemFavorite' : 'allItem';
-                return new ProjectItem(p, i, ctxVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
+                return new ProjectItem(p, i, ctxVal, colors[p], this.storagePath, isProjectOpen(p), timeStr, this.store.isSuspended(p));
             });
         } else {
             items = paths.map((p, i) => {
                 const timeStr = this.tracker.format(this.tracker.getSeconds(p));
-                return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr);
+                return new ProjectItem(p, i, this.contextVal, colors[p], this.storagePath, isProjectOpen(p), timeStr, this.store.isSuspended(p));
             });
         }
         this._cachedItems = items;
@@ -532,6 +549,159 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('projectcycle.cyclePriority', cyclePriority),
         vscode.commands.registerCommand('projectcycle.cycleAll', cycleAll),
 
+        // PID prototype — diagnostic command, not for production use
+        vscode.commands.registerCommand('projectcycle.probeWindowMap', () => {
+            const out = vscode.window.createOutputChannel('ProjectCycle · Window Map');
+            out.show(true);
+            out.appendLine('══════════════════════════════════════════════════════');
+            out.appendLine(' ProjectCycle Window → Folder Map — ' + new Date().toLocaleTimeString());
+            out.appendLine('══════════════════════════════════════════════════════\n');
+
+            const priorityPaths = store.getProjects('priorityProjects');
+
+            try {
+                const logBase = path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'logs');
+                const sessions = fs.readdirSync(logBase)
+                    .filter((s: string) => /^\d{8}T\d{6}$/.test(s)).sort().reverse();
+
+                let sessionDir: string | null = null;
+                for (const session of sessions) {
+                    const sDir = path.join(logBase, session);
+                    try {
+                        if (fs.readdirSync(sDir).some((f: string) => /^window\d+$/.test(f))) {
+                            sessionDir = sDir; break;
+                        }
+                    } catch {}
+                }
+
+                if (!sessionDir) { out.appendLine('No active session with windows found.'); return; }
+                out.appendLine(`Session: ${path.basename(sessionDir)}\n`);
+
+                const windows = fs.readdirSync(sessionDir)
+                    .filter((w: string) => /^window\d+$/.test(w))
+                    .sort((a: string, b: string) => parseInt(a.slice(6), 10) - parseInt(b.slice(6), 10));
+
+                for (const win of windows) {
+                    const gitLog = path.join(sessionDir, win, 'exthost', 'vscode.git', 'Git.log');
+                    const rendererLog = path.join(sessionDir, win, 'renderer.log');
+
+                    let folder = '(unknown — no git log)';
+                    try {
+                        const matches = fs.readFileSync(gitLog, 'utf8').match(/\/Users\/[^\s"]+/g);
+                        const hit = matches?.find((m: string) => !m.includes('.app') && !m.includes('vscode'));
+                        if (hit) { folder = hit; }
+                    } catch {}
+
+                    let extHostPid = '?';
+                    let extAlive = false;
+                    try {
+                        const rlContent = fs.readFileSync(rendererLog, 'utf8');
+                        const pidMatches = [...rlContent.matchAll(/Started local extension host with pid (\d+)/g)];
+                        if (pidMatches.length > 0) {
+                            const pid = parseInt(pidMatches[pidMatches.length - 1][1], 10);
+                            extHostPid = String(pid);
+                            try { process.kill(pid, 0); extAlive = true; } catch {}
+                        }
+                    } catch {}
+
+                    const inPriority = priorityPaths.includes(folder) ? ' ★ PRIORITY' : '';
+                    const suspended = store.isSuspended(folder) ? ' 💤 SUSPENDED' : '';
+                    const alive = extAlive ? '[alive]' : '[dead]';
+                    out.appendLine(`${win}: ext=${extHostPid} ${alive}${inPriority}${suspended}`);
+                    out.appendLine(`  → ${folder}`);
+                }
+            } catch (e) { out.appendLine(`Error: ${e}`); }
+
+            out.appendLine('\n══════════════════════════════════════════════════════');
+        }),
+
+        vscode.commands.registerCommand('projectcycle.prototypePids', () => {
+            const out = vscode.window.createOutputChannel('ProjectCycle · PID Probe');
+            out.show(true);
+            out.appendLine('══════════════════════════════════════════════════════');
+            out.appendLine(' ProjectCycle PID Prototype — ' + new Date().toLocaleTimeString());
+            out.appendLine('══════════════════════════════════════════════════════\n');
+
+            // ── 1. All VS Code-related processes ─────────────────────────────
+            out.appendLine('── 1. All VS Code processes (ps -ax -o pid,command) ──');
+            try {
+                const psAll = execSync(
+                    'ps -ax -o pid=,command= | grep -i "visual studio code\\|/Code.app\\|Code Helper" | grep -v grep',
+                    { timeout: 8000 }
+                ).toString().trim();
+                out.appendLine(psAll || '(none found)');
+            } catch { out.appendLine('(ps query failed)'); }
+
+            // ── 2. Renderer processes only ────────────────────────────────────
+            out.appendLine('\n── 2. Renderer processes only ──');
+            let rendererPids: number[] = [];
+            try {
+                const psRaw = execSync(
+                    'ps -ax -o pid=,command= | grep -i "Code Helper (Renderer)" | grep -v grep',
+                    { timeout: 8000 }
+                ).toString().trim();
+                out.appendLine(psRaw || '(none found)');
+
+                // Parse out PIDs for later use
+                rendererPids = psRaw.split('\n')
+                    .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
+                    .filter(n => !isNaN(n));
+            } catch { out.appendLine('(renderer query failed)'); }
+
+            // ── 3. Try to find --folder-uri in renderer args ──────────────────
+            out.appendLine('\n── 3. folder-uri / folder-path args in renderer processes ──');
+            try {
+                const uriHits = execSync(
+                    'ps -ax -o pid=,command= | grep -i "Code Helper (Renderer)" | grep -o "folder[^ ]*" | grep -v grep',
+                    { timeout: 8000 }
+                ).toString().trim();
+                out.appendLine(uriHits || '(no folder args found in renderer command lines)');
+            } catch { out.appendLine('(folder-uri scan failed)'); }
+
+            // ── 4. Full args of each renderer PID ────────────────────────────
+            out.appendLine('\n── 4. Full command line per renderer PID ──');
+            for (const pid of rendererPids.slice(0, 20)) {
+                try {
+                    // ps -p <pid> -o command= on macOS gives the full args
+                    const cmd = execSync(`ps -p ${pid} -o command=`, { timeout: 3000 }).toString().trim();
+                    out.appendLine(`\nPID ${pid}:`);
+                    // Print each arg on its own line for readability
+                    cmd.split(' --').forEach((part, i) => {
+                        out.appendLine(`  ${i === 0 ? '' : '--'}${part}`);
+                    });
+                } catch { out.appendLine(`PID ${pid}: (could not read)`); }
+            }
+
+            // ── 5. lsof: which renderer has which project folder open ─────────
+            out.appendLine('\n── 5. lsof match: renderer PID → known project paths ──');
+            const knownPaths = store.getProjects('allProjects');
+            if (knownPaths.length === 0) {
+                out.appendLine('(no projects in allProjects list)');
+            } else {
+                for (const pid of rendererPids.slice(0, 20)) {
+                    try {
+                        const lsofOut = execSync(`lsof -p ${pid} 2>/dev/null`, { timeout: 5000 }).toString();
+                        const matches: string[] = [];
+                        for (const p of knownPaths) {
+                            if (lsofOut.includes(p)) { matches.push(p); }
+                        }
+                        if (matches.length > 0) {
+                            out.appendLine(`PID ${pid} → ${matches.join(', ')}`);
+                        }
+                    } catch { /* lsof may fail on some pids, skip */ }
+                }
+                out.appendLine('(done — PIDs with no match omitted)');
+            }
+
+            // ── 6. Current window's own PID for reference ─────────────────────
+            out.appendLine(`\n── 6. This window's PID: ${process.pid} ──`);
+            out.appendLine(`     Workspace: ${currentProject ?? '(none)'}`);
+
+            out.appendLine('\n══════════════════════════════════════════════════════');
+            out.appendLine(' Done. Review sections above to see what\'s reliable.');
+            out.appendLine('══════════════════════════════════════════════════════');
+        }),
+
         // Priority section
         vscode.commands.registerCommand('projectcycle.addCurrent', () => {
             addCurrentTo('priorityProjects', 'priority');
@@ -599,6 +769,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
         vscode.commands.registerCommand('projectcycle.activateProject', async (projectPath: string, isOpen: boolean) => {
             const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            // Auto-resume suspended projects when the user explicitly clicks on them
+            if (store.isSuspended(projectPath)) {
+                resumeProjectProcesses(projectPath);
+                store.resumeProject(projectPath);
+                priorityProvider.refresh();
+                allProvider.refresh();
+            }
             if (isOpen) {
                 if (focusWindow(path.basename(projectPath))) {
                     navHist.push(currentFolder ?? '');
@@ -655,6 +832,35 @@ export function activate(context: vscode.ExtensionContext): void {
             await applyAnimatedProjectColor(color, activeColorMode, colorPhase);
         }),
 
+        vscode.commands.registerCommand('projectcycle.closeAllPriority', async () => {
+            const paths = store.getProjects('priorityProjects');
+            if (paths.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No priority projects configured.');
+                return;
+            }
+            openWindowNames = queryOpenWindowNames();
+            const open = paths.filter(p => isProjectOpen(p) && p !== currentProject);
+            if (open.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No other priority project windows are open.');
+                return;
+            }
+            const confirm = await vscode.window.showWarningMessage(
+                `Close ${open.length} priority project window${open.length > 1 ? 's' : ''}?`,
+                { modal: true },
+                'Close All'
+            );
+            if (confirm !== 'Close All') { return; }
+            for (const p of open) {
+                closeWindow(path.basename(p));
+                await new Promise<void>(r => setTimeout(r, 300));
+            }
+            setTimeout(() => {
+                openWindowNames = queryOpenWindowNames();
+                priorityProvider.refresh();
+                allProvider.refresh();
+            }, 800);
+        }),
+
         vscode.commands.registerCommand('projectcycle.openAllPriority', async () => {
             const paths = store.getProjects('priorityProjects');
             if (paths.length === 0) {
@@ -662,18 +868,124 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
             openWindowNames = queryOpenWindowNames();
-            const closed = paths.filter(p => !isProjectOpen(p));
-            if (closed.length === 0) {
-                vscode.window.showInformationMessage('ProjectCycle: All priority projects are already open.');
+
+            const items = paths.map(p => {
+                const isOpen = isProjectOpen(p);
+                const isSusp = store.isSuspended(p);
+                const status = isSusp ? '💤 Suspended' : isOpen ? '● Open' : '○ Closed';
+                return {
+                    label: path.basename(p),
+                    description: status,
+                    detail: p,
+                    picked: !isOpen && !isSusp, // pre-select only closed non-suspended ones
+                    projectPath: p,
+                    isOpen,
+                };
+            });
+
+            const selected = await vscode.window.showQuickPick(items, {
+                canPickMany: true,
+                title: 'Select projects to open',
+                placeHolder: 'Check projects to open → press Enter',
+            });
+            if (!selected || selected.length === 0) { return; }
+
+            const toOpen = selected.filter(s => !s.isOpen);
+            const toFocus = selected.filter(s => s.isOpen);
+
+            if (toOpen.length > 0) {
+                vscode.window.showInformationMessage(
+                    `ProjectCycle: Opening ${toOpen.length} project${toOpen.length > 1 ? 's' : ''}…`
+                );
+                for (const s of toOpen) {
+                    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(s.projectPath), { forceNewWindow: true });
+                    await new Promise<void>(r => setTimeout(r, 400));
+                }
+            }
+            for (const s of toFocus) {
+                focusWindow(path.basename(s.projectPath));
+                await new Promise<void>(r => setTimeout(r, 150));
+            }
+        }),
+
+        vscode.commands.registerCommand('projectcycle.suspendAllPriority', async () => {
+            const paths = store.getProjects('priorityProjects');
+            if (paths.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No priority projects configured.');
                 return;
             }
-            vscode.window.showInformationMessage(
-                `ProjectCycle: Opening ${closed.length} project${closed.length > 1 ? 's' : ''}…`
-            );
-            for (const p of closed) {
-                await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p), { forceNewWindow: true });
-                await new Promise<void>(r => setTimeout(r, 400));
+            openWindowNames = queryOpenWindowNames();
+
+            const items = paths
+                .filter(p => p !== currentProject)
+                .map(p => {
+                    const isOpen = isProjectOpen(p);
+                    const isSusp = store.isSuspended(p);
+                    const status = isSusp ? '💤 Already suspended' : isOpen ? '● Open' : '○ Closed (no window)';
+                    return {
+                        label: path.basename(p),
+                        description: status,
+                        detail: p,
+                        picked: isOpen && !isSusp, // pre-select open, non-suspended ones
+                        projectPath: p,
+                        isSusp,
+                    };
+                });
+
+            if (items.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No other priority projects to suspend.');
+                return;
             }
+
+            const selected = await vscode.window.showQuickPick(items, {
+                canPickMany: true,
+                title: 'Select projects to suspend',
+                placeHolder: 'Check projects to pause their language servers → press Enter',
+            });
+            if (!selected || selected.length === 0) { return; }
+
+            let suspended = 0;
+            for (const s of selected) {
+                if (s.isSusp) { continue; } // already suspended, skip
+                const ok = suspendProjectProcesses(s.projectPath);
+                if (ok) {
+                    store.suspendProject(s.projectPath);
+                    suspended++;
+                }
+            }
+            priorityProvider.refresh();
+            allProvider.refresh();
+            if (suspended > 0) {
+                vscode.window.showInformationMessage(
+                    `ProjectCycle: Suspended ${suspended} project${suspended > 1 ? 's' : ''}. Check Activity Monitor — language servers are now paused.`
+                );
+            }
+        }),
+
+        vscode.commands.registerCommand('projectcycle.suspendProject', async (item: ProjectItem) => {
+            const folderPath = item.projectPath;
+            if (folderPath === currentProject) {
+                vscode.window.showWarningMessage('ProjectCycle: Cannot suspend the current window.');
+                return;
+            }
+            const ok = suspendProjectProcesses(folderPath);
+            if (ok) {
+                store.suspendProject(folderPath);
+                vscode.window.showInformationMessage(`ProjectCycle: 💤 Suspended: ${path.basename(folderPath)}`);
+            } else {
+                vscode.window.showWarningMessage(`ProjectCycle: Could not suspend ${path.basename(folderPath)} — is it open with a git repo?`);
+            }
+            priorityProvider.refresh();
+            allProvider.refresh();
+        }),
+
+        vscode.commands.registerCommand('projectcycle.resumeProject', async (item: ProjectItem) => {
+            const folderPath = item.projectPath;
+            resumeProjectProcesses(folderPath);
+            store.resumeProject(folderPath);
+            vscode.window.showInformationMessage(`ProjectCycle: ▶ Resumed: ${path.basename(folderPath)}`);
+            priorityProvider.refresh();
+            allProvider.refresh();
         }),
 
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
@@ -1098,7 +1410,86 @@ function closeWindow(folderName: string): void {
     } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Process suspend / resume helpers
+// ---------------------------------------------------------------------------
+
+/** Find the NodeService (extension host) PID for a project by scanning VS Code log directories. */
+function findExtHostPidForProject(folderPath: string): number | null {
+    try {
+        const logBase = path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'logs');
+        const sessions = fs.readdirSync(logBase)
+            .filter(s => /^\d{8}T\d{6}$/.test(s))
+            .sort()
+            .reverse();
+
+        for (const session of sessions) {
+            const sDir = path.join(logBase, session);
+            let dirs: string[];
+            try { dirs = fs.readdirSync(sDir); } catch { continue; }
+            const windows = dirs
+                .filter(w => /^window\d+$/.test(w))
+                .sort((a, b) => parseInt(a.slice(6), 10) - parseInt(b.slice(6), 10));
+
+            if (windows.length === 0) { continue; }
+
+            for (const win of windows) {
+                // Git.log contains the project folder path (for git repos)
+                const gitLog = path.join(sDir, win, 'exthost', 'vscode.git', 'Git.log');
+                try {
+                    if (!fs.readFileSync(gitLog, 'utf8').includes(folderPath)) { continue; }
+                } catch { continue; }
+
+                // renderer.log records "Started local extension host with pid N"
+                const rendererLog = path.join(sDir, win, 'renderer.log');
+                try {
+                    const rlContent = fs.readFileSync(rendererLog, 'utf8');
+                    const pidMatches = [...rlContent.matchAll(/Started local extension host with pid (\d+)/g)];
+                    if (pidMatches.length === 0) { continue; }
+                    const pid = parseInt(pidMatches[pidMatches.length - 1][1], 10);
+                    try { process.kill(pid, 0); return pid; } catch { continue; } // verify alive
+                } catch { continue; }
+            }
+
+            if (windows.length > 0) { break; } // only check the session that has windows
+        }
+    } catch {}
+    return null;
+}
+
+/** SIGSTOP the language-server child processes of the given project's extension host. */
+function suspendProjectProcesses(folderPath: string): boolean {
+    const extHostPid = findExtHostPidForProject(folderPath);
+    if (!extHostPid) { return false; }
+    try {
+        const childPids = execSync(`pgrep -P ${extHostPid}`, { timeout: 3000 })
+            .toString().trim().split('\n')
+            .map(s => parseInt(s.trim(), 10))
+            .filter(n => !isNaN(n) && n > 0);
+        for (const childPid of childPids) {
+            try { process.kill(childPid, 'SIGSTOP'); } catch {}
+        }
+        return childPids.length > 0;
+    } catch { return false; }
+}
+
+/** SIGCONT the language-server child processes of the given project's extension host. */
+function resumeProjectProcesses(folderPath: string): void {
+    const extHostPid = findExtHostPidForProject(folderPath);
+    if (!extHostPid) { return; }
+    try {
+        const childPids = execSync(`pgrep -P ${extHostPid}`, { timeout: 3000 })
+            .toString().trim().split('\n')
+            .map(s => parseInt(s.trim(), 10))
+            .filter(n => !isNaN(n) && n > 0);
+        for (const childPid of childPids) {
+            try { process.kill(childPid, 'SIGCONT'); } catch {}
+        }
+    } catch {}
+}
+
 function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: string, noneOpenMsg: string): void {
+    store.reload(); // pick up suspensions/resumes made by other windows
     const paths = store.getProjects(configKey);
     if (paths.length === 0) {
         vscode.window.showInformationMessage(emptyMsg);
@@ -1109,6 +1500,7 @@ function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: stri
     const start = (currentIdx + 1) % paths.length;
     for (let i = 0; i < paths.length; i++) {
         const idx = (start + i) % paths.length;
+        if (store.isSuspended(paths[idx])) { continue; } // skip sleeping projects
         if (focusWindow(path.basename(paths[idx]))) {
             navHist.push(currentFolder);
             return;
