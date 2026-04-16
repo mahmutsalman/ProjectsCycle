@@ -140,6 +140,11 @@
         "icon": "$(debug-step-over)"
       },
       {
+        "command": "projectcycle.openAllPriority",
+        "title": "Open All Priority Projects",
+        "icon": "$(run-all)"
+      },
+      {
         "command": "projectcycle.timerMenu",
         "title": "ProjectCycle: Timer Controls"
       },
@@ -174,6 +179,11 @@
           "command": "projectcycle.tickColor",
           "when": "view == projectcycle.priorityView",
           "group": "navigation@5"
+        },
+        {
+          "command": "projectcycle.openAllPriority",
+          "when": "view == projectcycle.priorityView",
+          "group": "navigation@6"
         },
         {
           "command": "projectcycle.addCurrentToAll",

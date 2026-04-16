@@ -655,6 +655,27 @@ export function activate(context: vscode.ExtensionContext): void {
             await applyAnimatedProjectColor(color, activeColorMode, colorPhase);
         }),
 
+        vscode.commands.registerCommand('projectcycle.openAllPriority', async () => {
+            const paths = store.getProjects('priorityProjects');
+            if (paths.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: No priority projects configured.');
+                return;
+            }
+            openWindowNames = queryOpenWindowNames();
+            const closed = paths.filter(p => !isProjectOpen(p));
+            if (closed.length === 0) {
+                vscode.window.showInformationMessage('ProjectCycle: All priority projects are already open.');
+                return;
+            }
+            vscode.window.showInformationMessage(
+                `ProjectCycle: Opening ${closed.length} project${closed.length > 1 ? 's' : ''}…`
+            );
+            for (const p of closed) {
+                await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p), { forceNewWindow: true });
+                await new Promise<void>(r => setTimeout(r, 400));
+            }
+        }),
+
         vscode.commands.registerCommand('projectcycle.assignColor', async (item: ProjectItem) => {
             const colors: Record<string, string> = store.getColors();
             const currentColor = colors[item.projectPath];
@@ -1598,6 +1619,51 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'button.secondaryBackground':         deep(0.62),            // secondary button (No / Cancel)
         'button.secondaryForeground':         '#ffffffcc',           // secondary button text
         'button.secondaryHoverBackground':    deep(0.50),            // secondary hover
+        // ── Find widget + editor widgets (inline search bar, hover tooltip) ───
+        'editorWidget.background':            deep(0.78),            // find/replace widget bg
+        'editorWidget.foreground':            lightenHex(titleHex, 0.72), // widget text
+        'editorWidget.border':                titleHex + '60',       // widget border — subtle accent
+        'editorWidget.resizeBorder':          titleHex,              // resize handle
+        // ── Input fields (find box, settings inputs) ──────────────────────────
+        'input.background':                   deep(0.82),            // input field bg
+        'input.foreground':                   lightenHex(titleHex, 0.75), // typed text
+        'input.border':                       deep(0.55),            // input border
+        'input.placeholderForeground':        lightenHex(titleHex, 0.38), // placeholder hint text
+        'inputOption.activeBackground':       titleHex + '50',       // active toggle (Aa / ab / .*) bg
+        'inputOption.activeBorder':           titleHex,              // active toggle border
+        'inputOption.activeForeground':       lightenHex(titleHex, 0.90), // active toggle text
+        // ── Find match highlights in editor ───────────────────────────────────
+        'editor.findMatchBackground':         titleHex + '55',       // current match — accent bg
+        'editor.findMatchBorder':             titleHex,              // current match — accent border
+        'editor.findMatchHighlightBackground': actHex + '35',        // other matches — activity color
+        'editor.findMatchHighlightBorder':    actHex + '55',         // other match borders
+        'editor.findRangeHighlightBackground': deep(0.70),           // search scope region
+        // ── Hover tooltip widget ──────────────────────────────────────────────
+        'editorHoverWidget.background':       deep(0.78),            // hover tooltip bg
+        'editorHoverWidget.foreground':       lightenHex(titleHex, 0.75), // hover text
+        'editorHoverWidget.border':           titleHex + '60',       // hover border
+        'editorHoverWidget.statusBarBackground': deep(0.70),         // status strip inside hover
+        // ── Autocomplete / suggest widget ─────────────────────────────────────
+        'editorSuggestWidget.background':     deep(0.78),            // dropdown bg
+        'editorSuggestWidget.border':         titleHex + '60',       // dropdown border
+        'editorSuggestWidget.foreground':     lightenHex(titleHex, 0.72), // item text
+        'editorSuggestWidget.selectedBackground': deep(0.60),        // selected item bg
+        'editorSuggestWidget.selectedForeground': lightenHex(titleHex, 0.90), // selected item text
+        'editorSuggestWidget.highlightForeground': titleHex,         // matched chars — accent
+        'editorSuggestWidget.focusHighlightForeground': lightenHex(titleHex, 0.20), // focus match
+        // ── Peek view (go to definition inline panel) ─────────────────────────
+        'peekView.border':                    titleHex,              // peek panel outer border
+        'peekViewEditor.background':          deep(0.88),            // peek editor area
+        'peekViewEditor.matchHighlightBackground': titleHex + '45',  // match in peek editor
+        'peekViewResult.background':          deep(0.80),            // results list bg
+        'peekViewResult.fileForeground':      lightenHex(titleHex, 0.72), // file name text
+        'peekViewResult.lineForeground':      lightenHex(titleHex, 0.55), // line text
+        'peekViewResult.matchHighlightBackground': actHex + '50',    // match in results
+        'peekViewResult.selectionBackground': deep(0.60),            // selected result bg
+        'peekViewResult.selectionForeground': lightenHex(titleHex, 0.90), // selected result text
+        'peekViewTitle.background':           deep(0.72),            // peek title strip
+        'peekViewTitleLabel.foreground':      lightenHex(titleHex, 0.80), // peek file name
+        'peekViewTitleDescription.foreground': lightenHex(titleHex, 0.50), // peek path description
     }, vscode.ConfigurationTarget.Workspace);
 
     // Drive syntax palette from all three edge colors so each tick/mode state
@@ -1644,6 +1710,20 @@ async function removeProjectColor(): Promise<void> {
         'terminal.ansiCyan', 'terminal.ansiBrightCyan',
         'button.background', 'button.foreground', 'button.hoverBackground',
         'button.secondaryBackground', 'button.secondaryForeground', 'button.secondaryHoverBackground',
+        'editorWidget.background', 'editorWidget.foreground', 'editorWidget.border', 'editorWidget.resizeBorder',
+        'input.background', 'input.foreground', 'input.border', 'input.placeholderForeground',
+        'inputOption.activeBackground', 'inputOption.activeBorder', 'inputOption.activeForeground',
+        'editor.findMatchBackground', 'editor.findMatchBorder',
+        'editor.findMatchHighlightBackground', 'editor.findMatchHighlightBorder',
+        'editor.findRangeHighlightBackground',
+        'editorHoverWidget.background', 'editorHoverWidget.foreground', 'editorHoverWidget.border', 'editorHoverWidget.statusBarBackground',
+        'editorSuggestWidget.background', 'editorSuggestWidget.border', 'editorSuggestWidget.foreground',
+        'editorSuggestWidget.selectedBackground', 'editorSuggestWidget.selectedForeground',
+        'editorSuggestWidget.highlightForeground', 'editorSuggestWidget.focusHighlightForeground',
+        'peekView.border', 'peekViewEditor.background', 'peekViewEditor.matchHighlightBackground',
+        'peekViewResult.background', 'peekViewResult.fileForeground', 'peekViewResult.lineForeground',
+        'peekViewResult.matchHighlightBackground', 'peekViewResult.selectionBackground', 'peekViewResult.selectionForeground',
+        'peekViewTitle.background', 'peekViewTitleLabel.foreground', 'peekViewTitleDescription.foreground',
     ];
     const cfg  = vscode.workspace.getConfiguration();
     const cur  = (cfg.inspect('workbench.colorCustomizations')?.workspaceValue as Record<string, string>) ?? {};
