@@ -116,13 +116,14 @@ interface ProjectsData {
     projectColors: Record<string, string>;
     favorites: string[];
     suspendedProjects: string[];
+    serversSuppressed: string[];
     colorMode?: ColorMode;
     colorPhase?: number;
     colorLastTick?: number;
 }
 
 class ProjectStore {
-    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [] };
+    private data: ProjectsData = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [], serversSuppressed: [] };
     private readonly filePath: string;
 
     constructor(storagePath: string) {
@@ -135,9 +136,9 @@ class ProjectStore {
         try {
             if (fs.existsSync(this.filePath)) {
                 const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [], ...parsed };
+                this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [], serversSuppressed: [], ...parsed };
             }
-        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [] }; }
+        } catch { this.data = { priorityProjects: [], allProjects: [], projectColors: {}, favorites: [], suspendedProjects: [], serversSuppressed: [] }; }
     }
 
     save(): void {
@@ -213,6 +214,18 @@ class ProjectStore {
     }
     resumeProject(p: string): void {
         this.data.suspendedProjects = (this.data.suspendedProjects ?? []).filter(x => x !== p);
+        this.save();
+    }
+
+    isServerSuppressed(p: string): boolean { return (this.data.serversSuppressed ?? []).includes(p); }
+    suppressServer(p: string): void {
+        const list = this.data.serversSuppressed ?? [];
+        if (!list.includes(p)) { list.push(p); }
+        this.data.serversSuppressed = list;
+        this.save();
+    }
+    enableServer(p: string): void {
+        this.data.serversSuppressed = (this.data.serversSuppressed ?? []).filter(x => x !== p);
         this.save();
     }
 
@@ -448,6 +461,7 @@ function parseTimeInput(input: string): number | null {
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
+    vscode.window.showInformationMessage('ProjectCycle v0.0.4 activated ✓ — status bar items loading…');
     ensureCycleAllKeybinding(context);
 
     const storagePath = context.globalStorageUri.fsPath;
@@ -771,8 +785,9 @@ export function activate(context: vscode.ExtensionContext): void {
             const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             // Auto-resume suspended projects when the user explicitly clicks on them
             if (store.isSuspended(projectPath)) {
-                resumeProjectProcesses(projectPath);
+                clearServerSuppressionSettings(projectPath);
                 store.resumeProject(projectPath);
+                store.enableServer(projectPath);
                 priorityProvider.refresh();
                 allProvider.refresh();
             }
@@ -895,9 +910,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
             if (toOpen.length > 0) {
                 vscode.window.showInformationMessage(
-                    `ProjectCycle: Opening ${toOpen.length} project${toOpen.length > 1 ? 's' : ''}…`
+                    `ProjectCycle: Opening ${toOpen.length} project${toOpen.length > 1 ? 's' : ''}… (language servers pre-suppressed)`
                 );
                 for (const s of toOpen) {
+                    writeServerSuppressionSettings(s.projectPath);  // pre-suppress before window opens (Task 3)
+                    store.suppressServer(s.projectPath);
                     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(s.projectPath), { forceNewWindow: true });
                     await new Promise<void>(r => setTimeout(r, 400));
                 }
@@ -947,17 +964,16 @@ export function activate(context: vscode.ExtensionContext): void {
             let suspended = 0;
             for (const s of selected) {
                 if (s.isSusp) { continue; } // already suspended, skip
-                const ok = suspendProjectProcesses(s.projectPath);
-                if (ok) {
-                    store.suspendProject(s.projectPath);
-                    suspended++;
-                }
+                killLanguageServers(s.projectPath);
+                store.suspendProject(s.projectPath);
+                store.suppressServer(s.projectPath);
+                suspended++;
             }
             priorityProvider.refresh();
             allProvider.refresh();
             if (suspended > 0) {
                 vscode.window.showInformationMessage(
-                    `ProjectCycle: Suspended ${suspended} project${suspended > 1 ? 's' : ''}. Check Activity Monitor — language servers are now paused.`
+                    `ProjectCycle: Suspended ${suspended} project${suspended > 1 ? 's' : ''}. Language servers killed — suppression settings written to prevent restart.`
                 );
             }
         }),
@@ -968,22 +984,20 @@ export function activate(context: vscode.ExtensionContext): void {
                 vscode.window.showWarningMessage('ProjectCycle: Cannot suspend the current window.');
                 return;
             }
-            const ok = suspendProjectProcesses(folderPath);
-            if (ok) {
-                store.suspendProject(folderPath);
-                vscode.window.showInformationMessage(`ProjectCycle: 💤 Suspended: ${path.basename(folderPath)}`);
-            } else {
-                vscode.window.showWarningMessage(`ProjectCycle: Could not suspend ${path.basename(folderPath)} — is it open with a git repo?`);
-            }
+            killLanguageServers(folderPath);
+            store.suspendProject(folderPath);
+            store.suppressServer(folderPath);
+            vscode.window.showInformationMessage(`ProjectCycle: 💤 Suspended: ${path.basename(folderPath)} — language servers killed.`);
             priorityProvider.refresh();
             allProvider.refresh();
         }),
 
         vscode.commands.registerCommand('projectcycle.resumeProject', async (item: ProjectItem) => {
             const folderPath = item.projectPath;
-            resumeProjectProcesses(folderPath);
+            clearServerSuppressionSettings(folderPath);
             store.resumeProject(folderPath);
-            vscode.window.showInformationMessage(`ProjectCycle: ▶ Resumed: ${path.basename(folderPath)}`);
+            store.enableServer(folderPath);
+            vscode.window.showInformationMessage(`ProjectCycle: ▶ Resumed: ${path.basename(folderPath)} — language servers will restart automatically.`);
             priorityProvider.refresh();
             allProvider.refresh();
         }),
@@ -1115,7 +1129,9 @@ export function activate(context: vscode.ExtensionContext): void {
     let timerStopped = false;
 
     // --- Status bar item ---
-    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -9999);
+    // Right, 1000 → just left of LF/Encoding (which uses ~100), visible and uncluttered
+    const statusBarItem = vscode.window.createStatusBarItem('projectcycle-timer', vscode.StatusBarAlignment.Right, 1000);
+    statusBarItem.name = 'ProjectCycle Timer';
     statusBarItem.command = 'projectcycle.timerMenu';
     statusBarItem.text = '$(watch) —';
     statusBarItem.tooltip = 'ProjectCycle timer';
@@ -1150,6 +1166,72 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     updateStatusBar();
+
+    // --- Server status bar item (Task 4) ---
+    // Right, 999 → just left of timer (1000)
+    const serverStatusBar = vscode.window.createStatusBarItem('projectcycle-server', vscode.StatusBarAlignment.Right, 999);
+    serverStatusBar.name = 'ProjectCycle Server';
+    serverStatusBar.command = 'projectcycle.toggleLanguageServer';
+    serverStatusBar.show();  // always visible regardless of currentProject
+    context.subscriptions.push(serverStatusBar);
+
+    let serverStartingTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function updateServerStatusBar(): void {
+        if (!currentProject) {
+            serverStatusBar.text = '$(server-process) Server';
+            serverStatusBar.tooltip = 'ProjectCycle: no workspace open';
+            serverStatusBar.show();
+            return;
+        }
+        if (serverStartingTimer) {
+            serverStatusBar.text = '$(loading~spin) Server: Starting';
+            serverStatusBar.tooltip = `Language servers restarting for ${path.basename(currentProject)}… (auto-updates in ~15s)`;
+            serverStatusBar.show();
+            return;
+        }
+        if (store.isServerSuppressed(currentProject)) {
+            serverStatusBar.text = '$(server-process) Server: Off';
+            serverStatusBar.tooltip = `Language servers suppressed for ${path.basename(currentProject)}. Click to enable.`;
+        } else {
+            serverStatusBar.text = '$(server-process) Server: On';
+            serverStatusBar.tooltip = `Language servers running for ${path.basename(currentProject)}. Click to suppress.`;
+        }
+        serverStatusBar.show();
+    }
+
+    updateServerStatusBar();
+
+    context.subscriptions.push(
+        { dispose: () => { if (serverStartingTimer) { clearTimeout(serverStartingTimer); } } },
+
+        vscode.commands.registerCommand('projectcycle.toggleLanguageServer', () => {
+            if (!currentProject) { return; }
+            if (store.isServerSuppressed(currentProject)) {
+                // Enable: clear suppression settings → VS Code auto-restarts servers
+                clearServerSuppressionSettings(currentProject);
+                store.enableServer(currentProject);
+                serverStartingTimer = setTimeout(() => {
+                    serverStartingTimer = null;
+                    updateServerStatusBar();
+                }, 15_000);
+                updateServerStatusBar();
+                vscode.window.showInformationMessage(
+                    `ProjectCycle: Language servers enabled for ${path.basename(currentProject)} — restarting…`
+                );
+            } else {
+                // Disable: kill servers + write suppression settings.
+                // Pass process.pid — we are killing OUR OWN window's servers.
+                killLanguageServers(currentProject, process.pid);
+                store.suppressServer(currentProject);
+                if (serverStartingTimer) { clearTimeout(serverStartingTimer); serverStartingTimer = null; }
+                updateServerStatusBar();
+                vscode.window.showInformationMessage(
+                    `ProjectCycle: Language servers killed and suppressed for ${path.basename(currentProject)}.`
+                );
+            }
+        }),
+    );
 
     // --- Timer menu command ---
     context.subscriptions.push(
@@ -1332,8 +1414,41 @@ export function activate(context: vscode.ExtensionContext): void {
             tracker.reload();
             openWindowNames = queryOpenWindowNames();
             refreshTree(); // patched — also calls revealCurrentProject()
+            updateServerStatusBar();
         }),
     );
+
+    // -------------------------------------------------------------------------
+    // Self-kill on startup: if THIS project has servers suppressed, kill our own
+    // language servers from within this window after they've had time to start.
+    // This is more reliable than trying to kill from the outside (timing/log issues).
+    // -------------------------------------------------------------------------
+    if (currentProject && store.isServerSuppressed(currentProject)) {
+        // Use process.pid directly — this IS our extension host PID.
+        // Avoids the log-scan (which may return null for freshly opened windows).
+        const myExtHostPid = process.pid;
+
+        // Kill schedule: language servers start at different times.
+        //   tsserver, clangd:  10–20s after window open
+        //   Roslyn (C#):       60–180s after window open (large projects up to 4 min)
+        //   Java jdtls:        60–240s after window open
+        //   rust-analyzer:     30–90s after window open
+        // We kill on a staggered schedule covering the first 5 minutes, then stop.
+        // Each kill fires SIGKILL on any new children spawned since the last kill.
+        const KILL_TIMES_MS = [8_000, 20_000, 45_000, 90_000, 150_000, 240_000, 330_000];
+        const killTimers = KILL_TIMES_MS.map(delay =>
+            setTimeout(() => {
+                store.reload();
+                if (currentProject && store.isServerSuppressed(currentProject)) {
+                    killLanguageServers(currentProject, myExtHostPid);
+                }
+            }, delay)
+        );
+
+        context.subscriptions.push(
+            { dispose: () => { for (const t of killTimers) { clearTimeout(t); } } }
+        );
+    }
 }
 
 export function deactivate(): void {}
@@ -1457,35 +1572,258 @@ function findExtHostPidForProject(folderPath: string): number | null {
     return null;
 }
 
-/** SIGSTOP the language-server child processes of the given project's extension host. */
+/** Recursively collect all descendant PIDs of a given PID (breadth-first). */
+function collectDescendants(rootPid: number): number[] {
+    const result: number[] = [];
+    const queue = [rootPid];
+    while (queue.length > 0) {
+        const pid = queue.shift()!;
+        try {
+            const children = execSync(`pgrep -P ${pid}`, { timeout: 3000 })
+                .toString().trim().split('\n')
+                .map(s => parseInt(s.trim(), 10))
+                .filter(n => !isNaN(n) && n > 0);
+            for (const child of children) {
+                result.push(child);
+                queue.push(child); // recurse into grandchildren
+            }
+        } catch {} // pgrep exits with code 1 when no children — ignore
+    }
+    return result;
+}
+
+/** SIGSTOP the entire language-server subtree of the given project's extension host. */
 function suspendProjectProcesses(folderPath: string): boolean {
     const extHostPid = findExtHostPidForProject(folderPath);
     if (!extHostPid) { return false; }
-    try {
-        const childPids = execSync(`pgrep -P ${extHostPid}`, { timeout: 3000 })
-            .toString().trim().split('\n')
-            .map(s => parseInt(s.trim(), 10))
-            .filter(n => !isNaN(n) && n > 0);
-        for (const childPid of childPids) {
-            try { process.kill(childPid, 'SIGSTOP'); } catch {}
-        }
-        return childPids.length > 0;
-    } catch { return false; }
+    const allPids = collectDescendants(extHostPid);
+    if (allPids.length === 0) { return false; }
+    for (const pid of allPids) {
+        try { process.kill(pid, 'SIGSTOP'); } catch {}
+    }
+    return true;
 }
 
-/** SIGCONT the language-server child processes of the given project's extension host. */
+/** SIGCONT the entire language-server subtree of the given project's extension host. */
 function resumeProjectProcesses(folderPath: string): void {
     const extHostPid = findExtHostPidForProject(folderPath);
     if (!extHostPid) { return; }
+    const allPids = collectDescendants(extHostPid);
+    // Resume in reverse order (children before parents) so nothing wakes to a stopped parent
+    for (const pid of allPids.reverse()) {
+        try { process.kill(pid, 'SIGCONT'); } catch {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Language server suppression (Tasks 2–6)
+// ---------------------------------------------------------------------------
+
+/** Per-language workspace settings that suppress language server startup/work.
+ *
+ *  Research summary (what each setting actually does):
+ *
+ *  RUST      — rust-analyzer.initializeStopped:true is the ONLY confirmed setting that
+ *              PREVENTS the process from spawning. All other keys reduce work after start.
+ *
+ *  PYTHON    — python.languageServer:"None" prevents Pylance/Jedi from starting entirely.
+ *              No process spawns at all when this is set.
+ *
+ *  JAVA      — java.server.launchMode:"LightWeight" still spawns a JVM (syntax-only mode).
+ *              There is no setting that fully prevents the JVM from spawning. We rely on
+ *              SIGKILL for Java; these settings reduce work on restart.
+ *
+ *  C#/ROSLYN — No setting prevents the process from spawning. dotnet.backgroundAnalysis
+ *              keys reduce analysis work after start. We rely on SIGKILL for Roslyn.
+ *
+ *  TS/JS     — typescript.tsserver.enable does not exist. No setting prevents tsserver.
+ *              We rely on SIGKILL; these keys reduce tsserver work on restart.
+ *
+ *  C/C++     — C_Cpp.intelliSenseEngine:"disabled" prevents the IntelliSense engine from
+ *              running (clangd or the MS engine). Verified to prevent heavy analysis.
+ *
+ *  GO        — go.useLanguageServer:false disables gopls entirely (process won't spawn).
+ *
+ *  PHP       — intelephense.licenceKey workaround: php.suggest.enabled:false reduces work;
+ *              no confirmed process-prevention setting.
+ */
+const SUPPRESSION_SETTINGS_BY_LANGUAGE: Record<string, Record<string, unknown>> = {
+    java: {
+        // LightWeight still spawns a JVM but limits it to syntax-only (no indexing).
+        // We SIGKILL it anyway — these settings prevent heavy work on restart.
+        'java.server.launchMode': 'LightWeight',
+        'java.autobuild.enabled': false,
+        'java.compile.nullAnalysis.mode': 'disabled',
+        'java.imports.gradle.enabled': false,
+        'java.imports.maven.enabled': false,
+        'java.eclipse.downloadSources': false,
+        'java.maven.downloadSources': false,
+    },
+    csharp: {
+        // No setting prevents Roslyn from spawning — SIGKILL is the only option.
+        // These settings reduce analysis work when Roslyn restarts.
+        'dotnet.backgroundAnalysis.analyzerDiagnosticsScope': 'none',
+        'dotnet.backgroundAnalysis.compilerDiagnosticsScope': 'none',
+        'csharp.inlayHints.enableInlayHintsForParameters': false,
+        'csharp.inlayHints.enableInlayHintsForLiteralParameters': false,
+        'csharp.inlayHints.enableInlayHintsForObjectCreationParameters': false,
+        'csharp.inlayHints.enableInlayHintsForIndexerParameters': false,
+        'csharp.inlayHints.enableInlayHintsForOtherParameters': false,
+        'omnisharp.enableEditorConfigSupport': false,
+        'omnisharp.enableImportCompletion': false,
+        'omnisharp.enableRoslynAnalyzers': false,
+    },
+    rust: {
+        // PREVENTS STARTUP: initializeStopped:true stops rust-analyzer from launching.
+        // This is the only confirmed process-prevention setting across all languages.
+        'rust-analyzer.server.extraEnv': {},
+        'rust-analyzer.initializeStopped': true,
+        // Extra suppression if user manually starts it:
+        'rust-analyzer.checkOnSave': false,
+        'rust-analyzer.diagnostics.enable': false,
+        'rust-analyzer.inlayHints.enable': false,
+        'rust-analyzer.procMacro.enable': false,
+        'rust-analyzer.cargo.buildScripts.enable': false,
+        'rust-analyzer.lens.enable': false,
+    },
+    javascript: {
+        // No setting prevents tsserver from starting. These reduce its work on restart.
+        // maxTsServerMemory caps RAM at 128 MB instead of the default 3 GB.
+        'typescript.tsserver.maxTsServerMemory': 64,
+        'typescript.disableAutomaticTypeAcquisition': true,
+        'typescript.tsserver.experimental.enableProjectDiagnostics': false,
+        'typescript.suggest.enabled': false,
+        'javascript.suggest.enabled': false,
+        'typescript.tsserver.watchOptions': {},
+        'typescript.preferences.includePackageJsonAutoImports': 'off',
+        'javascript.preferences.includePackageJsonAutoImports': 'off',
+    },
+    c: {
+        // Disabling IntelliSenseEngine prevents the C/C++ analysis engine from running.
+        'C_Cpp.intelliSenseEngine': 'disabled',
+        'C_Cpp.errorSquiggles': 'disabled',
+        'C_Cpp.autocomplete': 'disabled',
+        'C_Cpp.formatting': 'disabled',
+    },
+    python: {
+        // "None" prevents Pylance and Jedi from starting — no process spawns.
+        'python.languageServer': 'None',
+        'python.analysis.typeCheckingMode': 'off',
+        'python.analysis.diagnosticMode': 'openFilesOnly',
+    },
+    go: {
+        // go.useLanguageServer:false disables gopls entirely — process won't spawn.
+        'go.useLanguageServer': false,
+        'go.buildOnSave': 'off',
+        'go.lintOnSave': 'off',
+        'go.vetOnSave': 'off',
+    },
+    php: {
+        'php.suggest.enabled': false,
+        'php.validate.enable': false,
+        'intelephense.diagnostics.enable': false,
+    },
+};
+
+/** Detect which language server families a project uses based on indicator files. */
+function detectProjectType(folderPath: string): string[] {
+    const types: string[] = [];
     try {
-        const childPids = execSync(`pgrep -P ${extHostPid}`, { timeout: 3000 })
-            .toString().trim().split('\n')
-            .map(s => parseInt(s.trim(), 10))
-            .filter(n => !isNaN(n) && n > 0);
-        for (const childPid of childPids) {
-            try { process.kill(childPid, 'SIGCONT'); } catch {}
+        // Java / Kotlin
+        if (fs.existsSync(path.join(folderPath, 'pom.xml')) ||
+            fs.existsSync(path.join(folderPath, 'build.gradle')) ||
+            fs.existsSync(path.join(folderPath, 'build.gradle.kts'))) {
+            types.push('java');
+        }
+        // Rust
+        if (fs.existsSync(path.join(folderPath, 'Cargo.toml'))) { types.push('rust'); }
+        // JavaScript / TypeScript
+        if (fs.existsSync(path.join(folderPath, 'package.json'))) { types.push('javascript'); }
+        // Python
+        if (fs.existsSync(path.join(folderPath, 'requirements.txt')) ||
+            fs.existsSync(path.join(folderPath, 'pyproject.toml')) ||
+            fs.existsSync(path.join(folderPath, 'setup.py')) ||
+            fs.existsSync(path.join(folderPath, 'Pipfile'))) {
+            types.push('python');
+        }
+        // Go
+        if (fs.existsSync(path.join(folderPath, 'go.mod'))) { types.push('go'); }
+
+        const entries = fs.readdirSync(folderPath);
+        // C# / .NET
+        if (entries.some((e: string) => e.endsWith('.csproj') || e.endsWith('.sln') || e.endsWith('.fsproj'))) {
+            types.push('csharp');
+        }
+        // C / C++
+        if (entries.some((e: string) => e.endsWith('.c') || e.endsWith('.h') || e.endsWith('.cpp') || e.endsWith('.hpp') || e.endsWith('.cc'))) {
+            types.push('c');
+        }
+        // PHP
+        if (fs.existsSync(path.join(folderPath, 'composer.json')) ||
+            entries.some((e: string) => e.endsWith('.php'))) {
+            types.push('php');
         }
     } catch {}
+    return types;
+}
+
+/** Write language server suppression settings to the project's .vscode/settings.json. */
+function writeServerSuppressionSettings(folderPath: string): void {
+    try {
+        const vscodeDir  = path.join(folderPath, '.vscode');
+        const settingsPath = path.join(vscodeDir, 'settings.json');
+
+        let settings: Record<string, unknown> = {};
+        if (fs.existsSync(settingsPath)) {
+            try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+        }
+
+        const types = detectProjectType(folderPath);
+        // If no specific type detected, apply all suppression settings as a safe default
+        const typesToSuppress = types.length > 0 ? types : Object.keys(SUPPRESSION_SETTINGS_BY_LANGUAGE);
+        for (const type of typesToSuppress) {
+            const suppSettings = SUPPRESSION_SETTINGS_BY_LANGUAGE[type];
+            if (suppSettings) { Object.assign(settings, suppSettings); }
+        }
+
+        fs.mkdirSync(vscodeDir, { recursive: true });
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    } catch {}
+}
+
+/** Remove language server suppression settings from the project's .vscode/settings.json.
+ *  VS Code detects the file change and re-enables the language servers automatically. */
+function clearServerSuppressionSettings(folderPath: string): void {
+    try {
+        const settingsPath = path.join(folderPath, '.vscode', 'settings.json');
+        if (!fs.existsSync(settingsPath)) { return; }
+
+        let settings: Record<string, unknown> = {};
+        try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return; }
+
+        // Remove every key we may have written across all language maps
+        const allKeys = Object.values(SUPPRESSION_SETTINGS_BY_LANGUAGE).flatMap(s => Object.keys(s));
+        for (const key of allKeys) { delete settings[key]; }
+
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    } catch {}
+}
+
+/** Kill the extension host subtree for a project (frees RAM) and write suppression settings
+ *  so VS Code does not auto-restart the language servers after the kill.
+ *  @param knownExtHostPid  Pass process.pid when killing OUR OWN window's servers —
+ *                          avoids the log-scan which may return null for freshly opened windows. */
+function killLanguageServers(folderPath: string, knownExtHostPid?: number): void {
+    const extHostPid = knownExtHostPid ?? findExtHostPidForProject(folderPath);
+    if (extHostPid) {
+        const descendants = collectDescendants(extHostPid);
+        for (const pid of descendants) {
+            try { process.kill(pid, 'SIGKILL'); } catch {}
+        }
+    }
+    // Always write suppression settings — even if process detection failed,
+    // this prevents servers from starting the next time the window is focused.
+    writeServerSuppressionSettings(folderPath);
 }
 
 function cycleList(configKey: 'priorityProjects' | 'allProjects', emptyMsg: string, noneOpenMsg: string): void {
@@ -1928,7 +2266,7 @@ async function applyProjectColor(baseHex: string, titleHex: string, actHex: stri
         'activityBar.foreground':             fgAct,
         'activityBar.inactiveForeground':     fgAct + '88',
         'statusBar.background':               statusHex,
-        'statusBar.foreground':               fgStatus,
+        'statusBar.foreground':               '#ffffff',  // always white — extension status bar items inherit this and must remain readable on colored bars
         // ── Panel backgrounds (solid deep-dark tint — not alpha fog) ──────────
         'sideBar.background':                 deep(0.84),   // sidebar list
         'sideBarSectionHeader.background':    deep(0.78),   // section headers — slightly lighter

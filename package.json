@@ -2,7 +2,7 @@
   "name": "projectcycle",
   "displayName": "ProjectCycle",
   "description": "Cycle through open VSCode windows with priority ordering",
-  "version": "0.0.1",
+  "version": "0.0.9",
   "publisher": "mahmutsalman",
   "engines": {
     "vscode": "^1.85.0"
@@ -179,6 +179,11 @@
       {
         "command": "projectcycle.probeWindowMap",
         "title": "ProjectCycle: [Debug] Show Window → Folder Map"
+      },
+      {
+        "command": "projectcycle.toggleLanguageServer",
+        "title": "ProjectCycle: Toggle Language Servers",
+        "icon": "$(server-process)"
       }
     ],
     "menus": {
